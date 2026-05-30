@@ -1,0 +1,14 @@
+# =============================================================
+# Squid Proxy - Allowed Domains
+# =============================================================
+# Domains listed here are permitted for outbound HTTPS/HTTP.
+# One domain per line. Prefix with . to allow all subdomains.
+# Update this file and rebuild the container image to apply changes.
+# =============================================================
+
+# AWS services
+.amazonaws.com
+.aws.amazon.com
+
+# AWS package repositories
+.amazonlinux.com

@@ -1,0 +1,120 @@
+<mxfile host="65bd71144e">
+    <diagram name="Endpoint Data Flow" id="page-1">
+        <mxGraphModel dx="1210" dy="816" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="49" value="&lt;span style=&quot;color: rgb(35, 47, 62); font-size: 14px; font-weight: 700; text-align: left; white-space: nowrap;&quot;&gt;Figure 2: Endpoint data flow (Workload resolves an AWS service domain through VPC Lattice to a shared interface VPC endpoint)&lt;/span&gt;" style="fillColor=none;strokeColor=#5A6C86;verticalAlign=bottom;fontStyle=0;fontColor=#5A6C86;whiteSpace=wrap;html=1;strokeWidth=3;" vertex="1" parent="1">
+                    <mxGeometry x="200" y="490" width="1400" height="720" as="geometry"/>
+                </mxCell>
+                <mxCell id="50" value="Workload VPC&lt;br&gt;&lt;i&gt;&lt;font style=&quot;font-size: 12px;&quot;&gt;service network VPC association, PrivateDnsEnabled&lt;/font&gt;&lt;/i&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=14;fontStyle=0;container=0;pointerEvents=0;collapsible=0;recursiveResize=0;shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_vpc2;strokeColor=#1B660F;fillColor=none;verticalAlign=top;align=left;spacingLeft=30;fontColor=#1B660F;dashed=0;" vertex="1" parent="1">
+                    <mxGeometry x="220" y="510" width="560" height="500" as="geometry"/>
+                </mxCell>
+                <mxCell id="51" value="Workload&lt;br&gt;&lt;font style=&quot;font-size: 12px;&quot;&gt;&lt;i&gt;(EC2 / ECS / Lambda)&lt;/i&gt;&lt;/font&gt;" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=14;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ec2;shadow=1;" vertex="1" parent="1">
+                    <mxGeometry x="260" y="610" width="60" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="52" value="Route 53 Resolver" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#8C4FFF;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=14;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.route_53_resolver;shadow=1;" vertex="1" parent="1">
+                    <mxGeometry x="680" y="610" width="60" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="53" value="Lattice-managed&lt;br&gt;Private Hosted Zone&lt;br&gt;&lt;i&gt;&lt;font style=&quot;font-size: 12px;&quot;&gt;{service}.{region}.amazonaws.com&lt;/font&gt;&lt;/i&gt;" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#8C4FFF;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=14;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.route_53;shadow=1;" vertex="1" parent="1">
+                    <mxGeometry x="530" y="830" width="60" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="54" value="&lt;font style=&quot;&quot;&gt;&lt;font style=&quot;font-size: 12px;&quot;&gt;DNS lookup&lt;/font&gt;&lt;br&gt;&lt;i style=&quot;font-size: 10px;&quot;&gt;{service}.{region}.amazonaws.com&lt;/i&gt;&lt;/font&gt;" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#2E73B8;rounded=0;fontSize=14;fontColor=#2E73B8;entryX=-0.017;entryY=0.23;entryDx=0;entryDy=0;entryPerimeter=0;exitX=1.014;exitY=0.2;exitDx=0;exitDy=0;exitPerimeter=0;" edge="1" parent="1" source="51" target="52">
+                    <mxGeometry x="-0.0018" relative="1" as="geometry">
+                        <mxPoint as="offset"/>
+                        <mxPoint x="300" y="644.08" as="sourcePoint"/>
+                        <mxPoint x="520" y="630" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="55" value="1" style="ellipse;whiteSpace=wrap;html=1;fillColor=#2E73B8;strokeColor=none;fontColor=#FFFFFF;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+                    <mxGeometry x="400" y="592" width="26" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="56" value="Associated PHZ" style="endArrow=classic;html=1;strokeWidth=1.5;strokeColor=#2E73B8;rounded=0;dashed=1;fontSize=14;fontColor=#2E73B8;edgeStyle=orthogonalEdgeStyle;verticalAlign=middle;textDirection=vertical-lr;startArrow=classic;startFill=1;" edge="1" parent="1" source="52" target="53">
+                    <mxGeometry x="-0.3125" relative="1" as="geometry">
+                        <mxPoint as="offset"/>
+                        <Array as="points">
+                            <mxPoint x="714" y="630"/>
+                            <mxPoint x="714" y="866"/>
+                        </Array>
+                        <mxPoint x="592" y="698" as="sourcePoint"/>
+                        <mxPoint x="592" y="866" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="57" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#2E73B8;rounded=0;dashed=1;fontSize=14;fontColor=#2E73B8;align=left;exitX=0.012;exitY=0.863;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.971;entryY=0.861;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="1" source="52">
+                    <mxGeometry x="-0.6" relative="1" as="geometry">
+                        <mxPoint x="683.3000000000001" y="657.4799999999999" as="sourcePoint"/>
+                        <mxPoint x="320" y="660.0000000000001" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="58" value="&lt;span style=&quot;color: rgb(46, 115, 184); text-align: left;&quot;&gt;&lt;font style=&quot;&quot;&gt;&lt;span style=&quot;font-size: 12px;&quot;&gt;Returns IP managed by VPC Lattice&lt;/span&gt;&lt;br&gt;&lt;i style=&quot;&quot;&gt;&lt;font style=&quot;font-size: 10px;&quot;&gt;(not in VPC CIDR)&lt;/font&gt;&lt;/i&gt;&lt;/font&gt;&lt;/span&gt;" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" connectable="0" vertex="1" parent="57">
+                    <mxGeometry x="0.1338" y="-1" relative="1" as="geometry">
+                        <mxPoint x="21" as="offset"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="59" value="2" style="ellipse;whiteSpace=wrap;html=1;fillColor=#2E73B8;strokeColor=none;fontColor=#FFFFFF;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+                    <mxGeometry x="400" y="660" width="26" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="60" value="VPC Lattice&#10;(dev Service Network)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#8C4FFF;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=14;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.vpc_lattice;shadow=1;" vertex="1" parent="1">
+                    <mxGeometry x="840" y="610" width="60" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="61" value="TCP 443 to Lattice IP" style="endArrow=classic;html=1;strokeWidth=2.5;strokeColor=#8B0000;rounded=0;fontSize=14;fontColor=#8B0000;edgeStyle=orthogonalEdgeStyle;curved=0;" edge="1" parent="1" source="51" target="60">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="290" y="580"/>
+                            <mxPoint x="870" y="580"/>
+                        </Array>
+                        <mxPoint x="350" y="580" as="sourcePoint"/>
+                        <mxPoint x="870" y="598" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="62" value="3" style="ellipse;whiteSpace=wrap;html=1;fillColor=#2E73B8;strokeColor=none;fontColor=#FFFFFF;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+                    <mxGeometry x="480" y="560" width="26" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="63" value="Network account&lt;br&gt;&lt;i&gt;&lt;font style=&quot;font-size: 12px;&quot;&gt;Endpoint VPC&lt;/font&gt;&lt;/i&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=14;fontStyle=0;container=0;pointerEvents=0;collapsible=0;recursiveResize=0;shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_vpc2;strokeColor=#2E73B8;fillColor=none;verticalAlign=top;align=left;spacingLeft=30;fontColor=#2E73B8;dashed=0;" vertex="1" parent="1">
+                    <mxGeometry x="980" y="510" width="600" height="500" as="geometry"/>
+                </mxCell>
+                <mxCell id="64" value="Endpoint&#10;Resource Gateway ENI" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#8C4FFF;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=14;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.endpoint;shadow=1;" vertex="1" parent="1">
+                    <mxGeometry x="1040" y="600" width="60" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="65" value="TCP to RGW" style="endArrow=classic;html=1;strokeWidth=2.5;strokeColor=#8B0000;rounded=1;fontSize=14;fontColor=#8B0000;" edge="1" parent="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="900" y="630" as="sourcePoint"/>
+                        <mxPoint x="1038" y="630" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="66" value="Interface VPC endpoint&lt;br&gt;(PrivateLink)&lt;br&gt;&lt;i&gt;&lt;font style=&quot;font-size: 8px;&quot;&gt;vpce-{id}.{service}.{region}.vpce.amazonaws.com&lt;/font&gt;&lt;/i&gt;" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#8C4FFF;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=14;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.endpoint;shadow=1;" vertex="1" parent="1">
+                    <mxGeometry x="1040" y="850" width="60" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="67" value="Resolves VPCE domain,&lt;br&gt;forwards to endpoint" style="endArrow=classic;html=1;strokeWidth=2.5;strokeColor=#8B0000;rounded=0;fontSize=14;fontColor=#8B0000;edgeStyle=orthogonalEdgeStyle;curved=0;" edge="1" parent="1" source="64" target="66">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="1170" y="630"/>
+                            <mxPoint x="1170" y="810"/>
+                            <mxPoint x="1070" y="810"/>
+                        </Array>
+                        <mxPoint x="1190" y="630" as="sourcePoint"/>
+                        <mxPoint x="1190" y="820" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="68" value="4" style="ellipse;whiteSpace=wrap;html=1;fillColor=#2E73B8;strokeColor=none;fontColor=#FFFFFF;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+                    <mxGeometry x="1140" y="710" width="26" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="69" value="AWS service&#10;(Systems Manager)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#E7157B;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=14;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.systems_manager;shadow=1;" vertex="1" parent="1">
+                    <mxGeometry x="1360" y="850" width="60" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="70" value="Privately to AWS service" style="endArrow=classic;html=1;strokeWidth=2.5;strokeColor=#8B0000;rounded=1;fontSize=14;fontColor=#8B0000;" edge="1" parent="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="1100" y="880" as="sourcePoint"/>
+                        <mxPoint x="1358" y="880" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="71" value="5" style="ellipse;whiteSpace=wrap;html=1;fillColor=#2E73B8;strokeColor=none;fontColor=#FFFFFF;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+                    <mxGeometry x="1130" y="850" width="26" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="72" value="&lt;font style=&quot;font-size: 12px;&quot;&gt;Steps&lt;br&gt;(1) The workload performs a DNS lookup for the AWS service domain (for example ssm.{region}.amazonaws.com). The VPC Route 53 Resolver checks the associated Private Hosted Zone.&lt;br&gt;(2) Because PrivateDnsEnabled created the Lattice-managed PHZ on association, the resolver returns an IP address managed by VPC Lattice (not part of the VPC CIDRs).&lt;br&gt;(3) The client connects on TCP 443 to the VPC Lattice IP. The service network does not terminate TLS; it forwards the raw TCP flow to the Resource Configuration's resource gateway.&lt;br&gt;(4) The resource gateway performs a DNS lookup on the configured VPC endpoint domain (vpce-{id}.{service}.{region}.vpce.amazonaws.com) and forwards the traffic. The source IP seen by the endpoint is the resource gateway's.&lt;br&gt;(5) The interface VPC endpoint (PrivateLink) forwards the traffic privately to the AWS service. The response returns along the same path.&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FBFBFB;strokeColor=#879196;align=left;verticalAlign=top;spacingLeft=12;spacingTop=10;fontSize=14;fontColor=#232F3E;" vertex="1" parent="1">
+                    <mxGeometry x="220" y="1039" width="1360" height="130" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+</mxfile>

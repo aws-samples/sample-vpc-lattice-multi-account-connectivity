@@ -1,0 +1,341 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Workload account foundation for the APG VPC Lattice reference architecture.
+  Creates a dedicated workload VPC spanning three Availability Zones with
+  public + private(NAT-egress) subnet tiers, and publishes the VPC and subnet
+  identifiers to SSM under /apg-lattice/workload/. The workload association
+  template (vpc-lattice-workload-vpc-association.yaml) reads the VPC ID from
+  SSM at deploy time, which is what makes service-managed StackSet rollout
+  work without a Lambda.
+
+  CloudFormation equivalent of the CDK WorkloadFoundationStack. Deploy this
+  per workload account before applying the workload association template.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: VPC sizing
+        Parameters:
+          - VpcCidr
+      - Label:
+          default: SSM parameter namespace
+        Parameters:
+          - VpcSsmPath
+
+Parameters:
+  VpcCidr:
+    Type: String
+    Default: 10.82.0.0/16
+    AllowedPattern: '^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$'
+    Description: IPv4 CIDR block for the workload VPC. Must not overlap with the Network account Endpoint or Egress VPC CIDRs.
+
+  VpcSsmPath:
+    Type: String
+    Default: /apg-lattice/workload/dev-vpc/id
+    AllowedPattern: '^/[a-zA-Z0-9/_.-]+[^/]$'
+    Description: SSM parameter path the VPC ID is published under. The workload association template defaults to /apg-lattice/workload/dev-vpc/id.
+
+Resources:
+  # ============================================================
+  # KMS key for CloudWatch Logs encryption at rest (flow logs)
+  # ============================================================
+  LogsKmsKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: CMK for APG Lattice workload-account CloudWatch log groups
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EnableRootAccountAdmin
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: AllowCloudWatchLogs
+            Effect: Allow
+            Principal:
+              Service: !Sub 'logs.${AWS::Region}.amazonaws.com'
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:Describe*
+            Resource: '*'
+            Condition:
+              ArnLike:
+                'kms:EncryptionContext:aws:logs:arn': !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+
+  # ============================================================
+  # Workload VPC: 3 AZs, public + private(NAT-egress), flow logs
+  # ============================================================
+  WorkloadVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: apg-lattice-workload-dev-vpc
+
+  WorkloadVpcFlowLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /apg-lattice/workload/dev-vpc/flow-logs/${AWS::StackName}
+      RetentionInDays: 30
+      KmsKeyId: !GetAtt LogsKmsKey.Arn
+
+  WorkloadVpcFlowLogManagedPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Allows the workload VPC flow-log role to publish to its log group
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+              - logs:DescribeLogStreams
+            Resource: !GetAtt WorkloadVpcFlowLogGroup.Arn
+
+  WorkloadVpcFlowLogRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: vpc-flow-logs.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref WorkloadVpcFlowLogManagedPolicy
+
+  WorkloadVpcFlowLog:
+    Type: AWS::EC2::FlowLog
+    Properties:
+      ResourceType: VPC
+      ResourceId: !Ref WorkloadVpc
+      TrafficType: ALL
+      LogDestinationType: cloud-watch-logs
+      LogGroupName: !Ref WorkloadVpcFlowLogGroup
+      DeliverLogsPermissionArn: !GetAtt WorkloadVpcFlowLogRole.Arn
+
+  WorkloadInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: apg-lattice-workload-dev-vpc/IGW
+
+  WorkloadIgwAttach:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref WorkloadVpc
+      InternetGatewayId: !Ref WorkloadInternetGateway
+
+  WorkloadPublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref WorkloadVpc
+      AvailabilityZone: !Sub ${AWS::Region}a
+      CidrBlock: !Select [0, !Cidr [!GetAtt WorkloadVpc.CidrBlock, 6, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: apg-lattice-workload-dev-vpc/publicSubnetA
+
+  WorkloadPublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref WorkloadVpc
+      AvailabilityZone: !Sub ${AWS::Region}b
+      CidrBlock: !Select [1, !Cidr [!GetAtt WorkloadVpc.CidrBlock, 6, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: apg-lattice-workload-dev-vpc/publicSubnetB
+
+  WorkloadPublicSubnetC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref WorkloadVpc
+      AvailabilityZone: !Sub ${AWS::Region}c
+      CidrBlock: !Select [2, !Cidr [!GetAtt WorkloadVpc.CidrBlock, 6, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: apg-lattice-workload-dev-vpc/publicSubnetC
+
+  WorkloadAppSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref WorkloadVpc
+      AvailabilityZone: !Sub ${AWS::Region}a
+      CidrBlock: !Select [3, !Cidr [!GetAtt WorkloadVpc.CidrBlock, 6, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: apg-lattice-workload-dev-vpc/appSubnetA
+
+  WorkloadAppSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref WorkloadVpc
+      AvailabilityZone: !Sub ${AWS::Region}b
+      CidrBlock: !Select [4, !Cidr [!GetAtt WorkloadVpc.CidrBlock, 6, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: apg-lattice-workload-dev-vpc/appSubnetB
+
+  WorkloadAppSubnetC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref WorkloadVpc
+      AvailabilityZone: !Sub ${AWS::Region}c
+      CidrBlock: !Select [5, !Cidr [!GetAtt WorkloadVpc.CidrBlock, 6, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: apg-lattice-workload-dev-vpc/appSubnetC
+
+  WorkloadPublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref WorkloadVpc
+      Tags:
+        - Key: Name
+          Value: apg-lattice-workload-dev-vpc/publicRouteTable
+
+  WorkloadPublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: WorkloadIgwAttach
+    Properties:
+      RouteTableId: !Ref WorkloadPublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref WorkloadInternetGateway
+
+  WorkloadPublicSubnetARouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref WorkloadPublicSubnetA
+      RouteTableId: !Ref WorkloadPublicRouteTable
+  WorkloadPublicSubnetBRouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref WorkloadPublicSubnetB
+      RouteTableId: !Ref WorkloadPublicRouteTable
+  WorkloadPublicSubnetCRouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref WorkloadPublicSubnetC
+      RouteTableId: !Ref WorkloadPublicRouteTable
+
+  # Single NAT GW for the reference lab; raise to one per AZ for production HA.
+  # Bootstraps SSM agent egress from the workload VPC before Lattice egress is wired.
+  WorkloadNatEip:
+    Type: AWS::EC2::EIP
+    DependsOn: WorkloadIgwAttach
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: apg-lattice-workload-dev-vpc/natEip
+
+  WorkloadNatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt WorkloadNatEip.AllocationId
+      SubnetId: !Ref WorkloadPublicSubnetA
+      Tags:
+        - Key: Name
+          Value: apg-lattice-workload-dev-vpc/natGateway
+
+  WorkloadAppRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref WorkloadVpc
+      Tags:
+        - Key: Name
+          Value: apg-lattice-workload-dev-vpc/appRouteTable
+
+  WorkloadAppDefaultRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref WorkloadAppRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref WorkloadNatGateway
+
+  WorkloadAppSubnetARouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref WorkloadAppSubnetA
+      RouteTableId: !Ref WorkloadAppRouteTable
+  WorkloadAppSubnetBRouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref WorkloadAppSubnetB
+      RouteTableId: !Ref WorkloadAppRouteTable
+  WorkloadAppSubnetCRouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref WorkloadAppSubnetC
+      RouteTableId: !Ref WorkloadAppRouteTable
+
+  # ============================================================
+  # SSM parameter contract — every identifier the workload association template consumes
+  # ============================================================
+  WorkloadVpcIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Ref VpcSsmPath
+      Type: String
+      Value: !Ref WorkloadVpc
+      Description: APG Lattice Workload Dev VPC ID
+
+  WorkloadVpcCidrParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /apg-lattice/workload/dev-vpc/cidr
+      Type: String
+      Value: !GetAtt WorkloadVpc.CidrBlock
+      Description: APG Lattice Workload Dev VPC CIDR
+
+  WorkloadAppSubnetAIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /apg-lattice/workload/dev-vpc/subnet/a/id
+      Type: String
+      Value: !Ref WorkloadAppSubnetA
+      Description: APG Lattice Workload Dev VPC app subnet a
+  WorkloadAppSubnetBIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /apg-lattice/workload/dev-vpc/subnet/b/id
+      Type: String
+      Value: !Ref WorkloadAppSubnetB
+      Description: APG Lattice Workload Dev VPC app subnet b
+  WorkloadAppSubnetCIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /apg-lattice/workload/dev-vpc/subnet/c/id
+      Type: String
+      Value: !Ref WorkloadAppSubnetC
+      Description: APG Lattice Workload Dev VPC app subnet c
+
+Outputs:
+  WorkloadVpcId:
+    Description: Workload VPC ID
+    Value: !Ref WorkloadVpc
+  WorkloadAppSubnetIds:
+    Description: Comma-separated Workload VPC app (private NAT-egress) subnet IDs (a,b,c)
+    Value: !Sub ${WorkloadAppSubnetA},${WorkloadAppSubnetB},${WorkloadAppSubnetC}
+  WorkloadPublicSubnetIds:
+    Description: Comma-separated Workload VPC public subnet IDs (a,b,c)
+    Value: !Sub ${WorkloadPublicSubnetA},${WorkloadPublicSubnetB},${WorkloadPublicSubnetC}

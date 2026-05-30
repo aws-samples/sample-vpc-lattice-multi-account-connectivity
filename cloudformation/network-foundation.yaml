@@ -1,0 +1,727 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Network account foundation for the APG VPC Lattice reference architecture.
+  Creates two dedicated VPCs spanning three Availability Zones each — the
+  Endpoint VPC for interface VPC endpoints + the endpoint Resource Gateway,
+  and the Egress VPC for the Squid Fargate service + the egress Resource
+  Gateway — and publishes every identifier the Lattice Core, Endpoints, and
+  Squid templates consume to SSM under /apg-lattice/.
+
+  CloudFormation equivalent of the CDK NetworkFoundationStack. Deploy this
+  first in the Network account before deploying vpc-lattice-resource-gateways.yaml
+  and squid-egress-proxy.yaml.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: VPC sizing
+        Parameters:
+          - EndpointVpcCidr
+          - EgressVpcCidr
+      - Label:
+          default: VPC Lattice integration
+        Parameters:
+          - LatticePrefixListId
+      - Label:
+          default: SSM parameter namespace
+        Parameters:
+          - SsmPrefix
+
+Parameters:
+  EndpointVpcCidr:
+    Type: String
+    Default: 10.80.0.0/16
+    AllowedPattern: '^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$'
+    Description: IPv4 CIDR block for the Endpoint VPC (interface endpoints + endpoint Resource Gateway). Must not overlap with workload VPCs.
+
+  EgressVpcCidr:
+    Type: String
+    Default: 10.81.0.0/16
+    AllowedPattern: '^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$'
+    Description: IPv4 CIDR block for the Egress VPC (NAT GW + Squid Fargate + egress Resource Gateway). Must not overlap with workload VPCs.
+
+  LatticePrefixListId:
+    Type: String
+    Default: ''
+    AllowedPattern: '^(pl-[0-9a-f]{8,17})?$'
+    Description: >
+      VPC Lattice managed prefix list ID for this region (com.amazonaws.<region>.vpc-lattice).
+      When set, the endpoint and egress security groups allow ingress from the Lattice data plane.
+      Leave empty to skip — you can add the rule later once you know the prefix list ID for the region.
+
+  SsmPrefix:
+    Type: String
+    Default: /apg-lattice
+    AllowedPattern: '^/[a-zA-Z0-9/_.-]+[^/]$'
+    Description: SSM parameter namespace under which all foundation identifiers are published. The Lattice Core, Endpoints, and Squid templates default to /apg-lattice/.
+
+Conditions:
+  HasLatticePrefixList: !Not [!Equals [!Ref LatticePrefixListId, '']]
+
+Resources:
+
+  # ============================================================
+  # KMS key for CloudWatch Logs encryption at rest (flow logs)
+  # ============================================================
+  LogsKmsKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: CMK for APG Lattice network-account CloudWatch log groups
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EnableRootAccountAdmin
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: AllowCloudWatchLogs
+            Effect: Allow
+            Principal:
+              Service: !Sub 'logs.${AWS::Region}.amazonaws.com'
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:Describe*
+            Resource: '*'
+            Condition:
+              ArnLike:
+                'kms:EncryptionContext:aws:logs:arn': !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+
+  # ============================================================
+  # Endpoint VPC: 3 AZs, isolated subnets (no NAT), flow logs
+  # ============================================================
+  EndpointVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref EndpointVpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: apg-lattice-endpoint-vpc
+
+  EndpointVpcFlowLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /apg-lattice/network/endpoint-vpc/flow-logs/${AWS::StackName}
+      RetentionInDays: 30
+      KmsKeyId: !GetAtt LogsKmsKey.Arn
+
+  EndpointVpcFlowLogManagedPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Allows the Endpoint VPC flow-log role to publish to its log group
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+              - logs:DescribeLogStreams
+            Resource: !GetAtt EndpointVpcFlowLogGroup.Arn
+
+  EndpointVpcFlowLogRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: vpc-flow-logs.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref EndpointVpcFlowLogManagedPolicy
+
+  EndpointVpcFlowLog:
+    Type: AWS::EC2::FlowLog
+    Properties:
+      ResourceType: VPC
+      ResourceId: !Ref EndpointVpc
+      TrafficType: ALL
+      LogDestinationType: cloud-watch-logs
+      LogGroupName: !Ref EndpointVpcFlowLogGroup
+      DeliverLogsPermissionArn: !GetAtt EndpointVpcFlowLogRole.Arn
+
+  EndpointSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref EndpointVpc
+      AvailabilityZone: !Sub ${AWS::Region}a
+      CidrBlock: !Select [0, !Cidr [!GetAtt EndpointVpc.CidrBlock, 3, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: apg-lattice-endpoint-vpc/endpointSubnetA
+
+  EndpointSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref EndpointVpc
+      AvailabilityZone: !Sub ${AWS::Region}b
+      CidrBlock: !Select [1, !Cidr [!GetAtt EndpointVpc.CidrBlock, 3, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: apg-lattice-endpoint-vpc/endpointSubnetB
+
+  EndpointSubnetC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref EndpointVpc
+      AvailabilityZone: !Sub ${AWS::Region}c
+      CidrBlock: !Select [2, !Cidr [!GetAtt EndpointVpc.CidrBlock, 3, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: apg-lattice-endpoint-vpc/endpointSubnetC
+
+  EndpointRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref EndpointVpc
+      Tags:
+        - Key: Name
+          Value: apg-lattice-endpoint-vpc/endpointRouteTable
+
+  EndpointSubnetARouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref EndpointSubnetA
+      RouteTableId: !Ref EndpointRouteTable
+
+  EndpointSubnetBRouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref EndpointSubnetB
+      RouteTableId: !Ref EndpointRouteTable
+
+  EndpointSubnetCRouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref EndpointSubnetC
+      RouteTableId: !Ref EndpointRouteTable
+
+  EndpointRgSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${AWS::StackName}-endpoint-rg-sg
+      GroupDescription: VPC endpoints + Lattice Resource Gateway - HTTPS
+      VpcId: !Ref EndpointVpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !GetAtt EndpointVpc.CidrBlock
+          Description: HTTPS from within the Endpoint VPC (Resource Gateway to VPCE)
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !GetAtt EndpointVpc.CidrBlock
+          Description: HTTPS to the interface VPC endpoints within the Endpoint VPC
+      Tags:
+        - Key: Name
+          Value: apg-lattice-endpoint-rg-sg
+
+  # Add the Lattice managed prefix list ingress rule only when the parameter is set.
+  # AWS::EC2::SecurityGroupIngress with SourcePrefixListId is the supported way
+  # to reference a managed prefix list as a source.
+  EndpointRgSgLatticeIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: HasLatticePrefixList
+    Properties:
+      GroupId: !Ref EndpointRgSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      SourcePrefixListId: !Ref LatticePrefixListId
+      Description: HTTPS from the VPC Lattice data plane (managed prefix list)
+
+  # ============================================================
+  # Interface VPC endpoints (the 11 services Lattice will expose as RCs)
+  #
+  # PrivateDnsEnabled is FALSE so each endpoint keeps its own regional DNS
+  # name (e.g. vpce-xxx.ssm.<region>.vpce.amazonaws.com). The Lattice
+  # resource-gateways template's Lambda discovers these names dynamically and
+  # wires them into Resource Configurations.
+  # ============================================================
+  SsmVpce:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Interface
+      VpcId: !Ref EndpointVpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ssm
+      SubnetIds: [!Ref EndpointSubnetA, !Ref EndpointSubnetB, !Ref EndpointSubnetC]
+      SecurityGroupIds: [!Ref EndpointRgSecurityGroup]
+      PrivateDnsEnabled: false
+
+  SsmMessagesVpce:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Interface
+      VpcId: !Ref EndpointVpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ssmmessages
+      SubnetIds: [!Ref EndpointSubnetA, !Ref EndpointSubnetB, !Ref EndpointSubnetC]
+      SecurityGroupIds: [!Ref EndpointRgSecurityGroup]
+      PrivateDnsEnabled: false
+
+  Ec2MessagesVpce:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Interface
+      VpcId: !Ref EndpointVpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ec2messages
+      SubnetIds: [!Ref EndpointSubnetA, !Ref EndpointSubnetB, !Ref EndpointSubnetC]
+      SecurityGroupIds: [!Ref EndpointRgSecurityGroup]
+      PrivateDnsEnabled: false
+
+  StsVpce:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Interface
+      VpcId: !Ref EndpointVpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.sts
+      SubnetIds: [!Ref EndpointSubnetA, !Ref EndpointSubnetB, !Ref EndpointSubnetC]
+      SecurityGroupIds: [!Ref EndpointRgSecurityGroup]
+      PrivateDnsEnabled: false
+
+  EcrApiVpce:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Interface
+      VpcId: !Ref EndpointVpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ecr.api
+      SubnetIds: [!Ref EndpointSubnetA, !Ref EndpointSubnetB, !Ref EndpointSubnetC]
+      SecurityGroupIds: [!Ref EndpointRgSecurityGroup]
+      PrivateDnsEnabled: false
+
+  EcrDkrVpce:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Interface
+      VpcId: !Ref EndpointVpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ecr.dkr
+      SubnetIds: [!Ref EndpointSubnetA, !Ref EndpointSubnetB, !Ref EndpointSubnetC]
+      SecurityGroupIds: [!Ref EndpointRgSecurityGroup]
+      PrivateDnsEnabled: false
+
+  LogsVpce:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Interface
+      VpcId: !Ref EndpointVpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.logs
+      SubnetIds: [!Ref EndpointSubnetA, !Ref EndpointSubnetB, !Ref EndpointSubnetC]
+      SecurityGroupIds: [!Ref EndpointRgSecurityGroup]
+      PrivateDnsEnabled: false
+
+  EcsVpce:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Interface
+      VpcId: !Ref EndpointVpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ecs
+      SubnetIds: [!Ref EndpointSubnetA, !Ref EndpointSubnetB, !Ref EndpointSubnetC]
+      SecurityGroupIds: [!Ref EndpointRgSecurityGroup]
+      PrivateDnsEnabled: false
+
+  EcsAgentVpce:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Interface
+      VpcId: !Ref EndpointVpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ecs-agent
+      SubnetIds: [!Ref EndpointSubnetA, !Ref EndpointSubnetB, !Ref EndpointSubnetC]
+      SecurityGroupIds: [!Ref EndpointRgSecurityGroup]
+      PrivateDnsEnabled: false
+
+  EcsTelemetryVpce:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Interface
+      VpcId: !Ref EndpointVpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ecs-telemetry
+      SubnetIds: [!Ref EndpointSubnetA, !Ref EndpointSubnetB, !Ref EndpointSubnetC]
+      SecurityGroupIds: [!Ref EndpointRgSecurityGroup]
+      PrivateDnsEnabled: false
+
+  ExecuteApiVpce:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Interface
+      VpcId: !Ref EndpointVpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.execute-api
+      SubnetIds: [!Ref EndpointSubnetA, !Ref EndpointSubnetB, !Ref EndpointSubnetC]
+      SecurityGroupIds: [!Ref EndpointRgSecurityGroup]
+      PrivateDnsEnabled: false
+
+  # ============================================================
+  # Egress VPC: 3 AZs, public + private(NAT-egress), flow logs
+  # ============================================================
+  EgressVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref EgressVpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: apg-lattice-egress-vpc
+
+  EgressVpcFlowLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /apg-lattice/network/egress-vpc/flow-logs/${AWS::StackName}
+      RetentionInDays: 30
+      KmsKeyId: !GetAtt LogsKmsKey.Arn
+
+  EgressVpcFlowLogManagedPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Allows the Egress VPC flow-log role to publish to its log group
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+              - logs:DescribeLogStreams
+            Resource: !GetAtt EgressVpcFlowLogGroup.Arn
+
+  EgressVpcFlowLogRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: vpc-flow-logs.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref EgressVpcFlowLogManagedPolicy
+
+  EgressVpcFlowLog:
+    Type: AWS::EC2::FlowLog
+    Properties:
+      ResourceType: VPC
+      ResourceId: !Ref EgressVpc
+      TrafficType: ALL
+      LogDestinationType: cloud-watch-logs
+      LogGroupName: !Ref EgressVpcFlowLogGroup
+      DeliverLogsPermissionArn: !GetAtt EgressVpcFlowLogRole.Arn
+
+  EgressInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: apg-lattice-egress-vpc/IGW
+
+  EgressIgwAttach:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref EgressVpc
+      InternetGatewayId: !Ref EgressInternetGateway
+
+  EgressPublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref EgressVpc
+      AvailabilityZone: !Sub ${AWS::Region}a
+      CidrBlock: !Select [0, !Cidr [!GetAtt EgressVpc.CidrBlock, 6, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: apg-lattice-egress-vpc/publicSubnetA
+
+  EgressPublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref EgressVpc
+      AvailabilityZone: !Sub ${AWS::Region}b
+      CidrBlock: !Select [1, !Cidr [!GetAtt EgressVpc.CidrBlock, 6, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: apg-lattice-egress-vpc/publicSubnetB
+
+  EgressPublicSubnetC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref EgressVpc
+      AvailabilityZone: !Sub ${AWS::Region}c
+      CidrBlock: !Select [2, !Cidr [!GetAtt EgressVpc.CidrBlock, 6, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: apg-lattice-egress-vpc/publicSubnetC
+
+  EgressPrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref EgressVpc
+      AvailabilityZone: !Sub ${AWS::Region}a
+      CidrBlock: !Select [3, !Cidr [!GetAtt EgressVpc.CidrBlock, 6, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: apg-lattice-egress-vpc/privateSubnetA
+
+  EgressPrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref EgressVpc
+      AvailabilityZone: !Sub ${AWS::Region}b
+      CidrBlock: !Select [4, !Cidr [!GetAtt EgressVpc.CidrBlock, 6, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: apg-lattice-egress-vpc/privateSubnetB
+
+  EgressPrivateSubnetC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref EgressVpc
+      AvailabilityZone: !Sub ${AWS::Region}c
+      CidrBlock: !Select [5, !Cidr [!GetAtt EgressVpc.CidrBlock, 6, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: apg-lattice-egress-vpc/privateSubnetC
+
+  EgressPublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref EgressVpc
+      Tags:
+        - Key: Name
+          Value: apg-lattice-egress-vpc/publicRouteTable
+
+  EgressPublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: EgressIgwAttach
+    Properties:
+      RouteTableId: !Ref EgressPublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref EgressInternetGateway
+
+  EgressPublicSubnetARouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref EgressPublicSubnetA
+      RouteTableId: !Ref EgressPublicRouteTable
+  EgressPublicSubnetBRouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref EgressPublicSubnetB
+      RouteTableId: !Ref EgressPublicRouteTable
+  EgressPublicSubnetCRouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref EgressPublicSubnetC
+      RouteTableId: !Ref EgressPublicRouteTable
+
+  # Single NAT GW for the reference lab (raise to one per AZ for production HA).
+  EgressNatEip:
+    Type: AWS::EC2::EIP
+    DependsOn: EgressIgwAttach
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: apg-lattice-egress-vpc/natEip
+
+  EgressNatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt EgressNatEip.AllocationId
+      SubnetId: !Ref EgressPublicSubnetA
+      Tags:
+        - Key: Name
+          Value: apg-lattice-egress-vpc/natGateway
+
+  EgressPrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref EgressVpc
+      Tags:
+        - Key: Name
+          Value: apg-lattice-egress-vpc/privateRouteTable
+
+  EgressPrivateDefaultRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref EgressPrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref EgressNatGateway
+
+  EgressPrivateSubnetARouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref EgressPrivateSubnetA
+      RouteTableId: !Ref EgressPrivateRouteTable
+  EgressPrivateSubnetBRouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref EgressPrivateSubnetB
+      RouteTableId: !Ref EgressPrivateRouteTable
+  EgressPrivateSubnetCRouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref EgressPrivateSubnetC
+      RouteTableId: !Ref EgressPrivateRouteTable
+
+  EgressRgSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${AWS::StackName}-egress-rg-sg
+      GroupDescription: VPC Lattice egress Resource Gateway + Squid tasks - proxy port 3128
+      VpcId: !Ref EgressVpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3128
+          ToPort: 3128
+          CidrIp: !GetAtt EgressVpc.CidrBlock
+          Description: Internal NLB to Squid task within the Egress VPC
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 3128
+          ToPort: 3128
+          CidrIp: !GetAtt EgressVpc.CidrBlock
+          Description: Proxy port to the internal NLB / Squid tasks within the Egress VPC
+      Tags:
+        - Key: Name
+          Value: apg-lattice-egress-rg-sg
+
+  EgressRgSgLatticeIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: HasLatticePrefixList
+    Properties:
+      GroupId: !Ref EgressRgSecurityGroup
+      IpProtocol: tcp
+      FromPort: 3128
+      ToPort: 3128
+      SourcePrefixListId: !Ref LatticePrefixListId
+      Description: Squid proxy port from the VPC Lattice data plane (managed prefix list)
+
+  # ============================================================
+  # SSM parameter contract — every identifier the Lattice templates consume
+  # ============================================================
+
+  # Endpoint VPC
+  EndpointVpcIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub ${SsmPrefix}/network/endpoint-vpc/id
+      Type: String
+      Value: !Ref EndpointVpc
+      Description: APG Lattice Endpoint VPC ID
+  EndpointVpcCidrParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub ${SsmPrefix}/network/endpoint-vpc/cidr
+      Type: String
+      Value: !GetAtt EndpointVpc.CidrBlock
+      Description: APG Lattice Endpoint VPC CIDR
+  EndpointSubnetAIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub ${SsmPrefix}/network/endpoint-vpc/subnet/a/id
+      Type: String
+      Value: !Ref EndpointSubnetA
+      Description: APG Lattice Endpoint VPC Resource Gateway subnet a
+  EndpointSubnetBIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub ${SsmPrefix}/network/endpoint-vpc/subnet/b/id
+      Type: String
+      Value: !Ref EndpointSubnetB
+      Description: APG Lattice Endpoint VPC Resource Gateway subnet b
+  EndpointSubnetCIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub ${SsmPrefix}/network/endpoint-vpc/subnet/c/id
+      Type: String
+      Value: !Ref EndpointSubnetC
+      Description: APG Lattice Endpoint VPC Resource Gateway subnet c
+  EndpointRgSgIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub ${SsmPrefix}/network/endpoint-vpc/sg/rg/id
+      Type: String
+      Value: !GetAtt EndpointRgSecurityGroup.GroupId
+      Description: APG Lattice Endpoint Resource Gateway SG
+
+  # Egress VPC
+  EgressVpcIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub ${SsmPrefix}/network/egress-vpc/id
+      Type: String
+      Value: !Ref EgressVpc
+      Description: APG Lattice Egress VPC ID
+  EgressVpcCidrParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub ${SsmPrefix}/network/egress-vpc/cidr/ipv4
+      Type: String
+      Value: !GetAtt EgressVpc.CidrBlock
+      Description: APG Lattice Egress VPC CIDR (IPv4)
+  EgressSubnetAIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub ${SsmPrefix}/network/egress-vpc/subnet/a/id
+      Type: String
+      Value: !Ref EgressPrivateSubnetA
+      Description: APG Lattice Egress VPC private subnet a
+  EgressSubnetBIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub ${SsmPrefix}/network/egress-vpc/subnet/b/id
+      Type: String
+      Value: !Ref EgressPrivateSubnetB
+      Description: APG Lattice Egress VPC private subnet b
+  EgressSubnetCIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub ${SsmPrefix}/network/egress-vpc/subnet/c/id
+      Type: String
+      Value: !Ref EgressPrivateSubnetC
+      Description: APG Lattice Egress VPC private subnet c
+  EgressRgSgIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub ${SsmPrefix}/network/egress-vpc/sg/rg/id
+      Type: String
+      Value: !GetAtt EgressRgSecurityGroup.GroupId
+      Description: APG Lattice Egress Resource Gateway SG
+
+Outputs:
+  EndpointVpcId:
+    Description: Endpoint VPC ID
+    Value: !Ref EndpointVpc
+  EgressVpcId:
+    Description: Egress VPC ID
+    Value: !Ref EgressVpc
+  EndpointSubnetIds:
+    Description: Comma-separated Endpoint VPC Resource Gateway subnet IDs (a,b,c)
+    Value: !Sub ${EndpointSubnetA},${EndpointSubnetB},${EndpointSubnetC}
+  EgressPrivateSubnetIds:
+    Description: Comma-separated Egress VPC private subnet IDs (a,b,c)
+    Value: !Sub ${EgressPrivateSubnetA},${EgressPrivateSubnetB},${EgressPrivateSubnetC}
+  EndpointRgSecurityGroupId:
+    Description: Endpoint Resource Gateway security group ID
+    Value: !GetAtt EndpointRgSecurityGroup.GroupId
+  EgressRgSecurityGroupId:
+    Description: Egress Resource Gateway security group ID
+    Value: !GetAtt EgressRgSecurityGroup.GroupId

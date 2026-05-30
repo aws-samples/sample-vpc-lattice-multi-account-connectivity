@@ -1,0 +1,20 @@
+# CDK
+cdk/node_modules/
+cdk/cdk.out/
+cdk/*.js
+cdk/*.d.ts
+!cdk/jest.config.js
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env
+.env.local

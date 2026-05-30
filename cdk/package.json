@@ -1,0 +1,33 @@
+{
+  "name": "vpc-lattice-multi-account-connectivity",
+  "version": "1.0.0",
+  "description": "CDK deployment for VPC Lattice multi-account connectivity fabric",
+  "bin": {
+    "app": "bin/app.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "cdk": "cdk",
+    "synth": "cdk synth",
+    "deploy:core": "cdk deploy VpcLatticeCoreStack",
+    "deploy:endpoints": "cdk deploy VpcLatticeEndpointsStack",
+    "deploy:egress": "cdk deploy SquidEgressStack",
+    "deploy:network": "cdk deploy NetworkFoundationStack VpcLatticeCoreStack VpcLatticeEndpointsStack SquidImageBuildStack SquidEgressStack",
+    "deploy:management": "cdk deploy WorkloadAssociationStackSetStack",
+    "deploy:workload": "cdk deploy WorkloadFoundationStack WorkloadValidatorStack",
+    "deploy:all": "cdk deploy --all"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "aws-cdk": "^2.150.0",
+    "cdk-nag": "^2.28.0",
+    "source-map-support": "^0.5.21",
+    "ts-node": "^10.9.2",
+    "typescript": "~5.4.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.150.0",
+    "constructs": "^10.0.0"
+  }
+}

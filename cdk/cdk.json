@@ -1,0 +1,39 @@
+{
+  "app": "npx ts-node --prefer-ts-exts bin/app.ts",
+  "watch": {
+    "include": ["**"],
+    "exclude": ["README.md", "cdk*.js", "**/*.d.ts", "**/*.js", "node_modules"]
+  },
+  "context": {
+    "_comment": "Replace EXAMPLE placeholders below with values from your AWS Organization, Region, and Landing Zone before deploying. None of these are real identifiers.",
+    "_account_comment": "The networkAccountId / managementAccountId / workloadAccountId values pin each stack to its target account at synth time. CDK will refuse to deploy a stack to the wrong account, even if you accidentally point a different --profile at it. Override at the CLI with -c networkAccountId=... etc.",
+    "orgId": "o-EXAMPLE12345",
+    "region": "us-east-2",
+    "networkAccountId": "111111111111",
+    "managementAccountId": "222222222222",
+    "workloadAccountId": "333333333333",
+    "ssmPrefix": "/apg-lattice",
+    "latticePrefixListV4": "pl-EXAMPLE0000000000",
+    "latticePrefixListV6": "pl-EXAMPLE0000000001",
+    "endpointVpcSsmPath": "/apg-lattice/network/endpoint-vpc/id",
+    "egressVpcSsmPath": "/apg-lattice/network/egress-vpc/id",
+    "endpointSubnetASsmPath": "/apg-lattice/network/endpoint-vpc/subnet/a/id",
+    "endpointSubnetBSsmPath": "/apg-lattice/network/endpoint-vpc/subnet/b/id",
+    "endpointSubnetCSsmPath": "/apg-lattice/network/endpoint-vpc/subnet/c/id",
+    "endpointSgSsmPath": "/apg-lattice/network/endpoint-vpc/sg/rg/id",
+    "egressSubnetASsmPath": "/apg-lattice/network/egress-vpc/subnet/a/id",
+    "egressSubnetBSsmPath": "/apg-lattice/network/egress-vpc/subnet/b/id",
+    "egressSubnetCSsmPath": "/apg-lattice/network/egress-vpc/subnet/c/id",
+    "egressSgSsmPath": "/apg-lattice/network/egress-vpc/sg/rg/id",
+    "workloadVpcSsmPath": "/apg-lattice/workload/dev-vpc/id",
+    "devOuId": "ou-EXAMPLE-dev0000",
+    "devServiceNetworkId": "sn-EXAMPLEdev0000000",
+    "devOuArn": "arn:aws:organizations::111111111111:ou/o-EXAMPLE12345/ou-EXAMPLE-dev0000",
+    "stageOuArn": "arn:aws:organizations::111111111111:ou/o-EXAMPLE12345/ou-EXAMPLE-stage000",
+    "prodOuArn": "arn:aws:organizations::111111111111:ou/o-EXAMPLE12345/ou-EXAMPLE-prod0000",
+    "squidAllowedDomains": ".amazonaws.com .your-domain.com",
+    "squidDesiredCount": 2,
+    "squidCpu": 512,
+    "squidMemory": 1024
+  }
+}

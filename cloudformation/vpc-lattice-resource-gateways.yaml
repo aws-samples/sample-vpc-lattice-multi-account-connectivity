@@ -1,0 +1,914 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  VPC Lattice Service Networks, Resource Gateways, Resource Configurations,
+  and RAM shares to workload accounts. Deployed to the Network account.
+  All VPC/subnet/SG IDs are resolved dynamically from SSM parameters.
+  VPCE DNS names are resolved dynamically via Lambda custom resource.
+
+Parameters:
+  EndpointVpcId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::VPC::Id>
+    Default: /apg-lattice/network/endpoint-vpc/id
+    Description: SSM parameter path for the Endpoint VPC ID
+  EndpointSubnetAId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Subnet::Id>
+    Default: /apg-lattice/network/endpoint-vpc/subnet/a/id
+    Description: SSM parameter path for the Endpoint VPC subnet A ID
+  EndpointSubnetBId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Subnet::Id>
+    Default: /apg-lattice/network/endpoint-vpc/subnet/b/id
+    Description: SSM parameter path for the Endpoint VPC subnet B ID
+  EndpointSecurityGroupId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::SecurityGroup::Id>
+    Default: /apg-lattice/network/endpoint-vpc/sg/rg/id
+    Description: SSM parameter path for the Resource Gateway security group ID
+  OrgId:
+    Type: String
+    Description: AWS Organizations ID (e.g., o-EXAMPLE12345)
+  DevOuArn:
+    Type: String
+    Description: ARN of the Dev OU (the OU containing all dev workload accounts)
+  DevOuPath:
+    Type: String
+    Description: >
+      Org path for the Dev OU, e.g.
+      o-EXAMPLE12345/r-EXAM/ou-EXAMPLE-dev0000.
+      Used in IAM auth policy aws:PrincipalOrgPaths conditions.
+  StageOuArn:
+    Type: String
+    Description: ARN of the Stage OU
+  StageOuPath:
+    Type: String
+    Description: Org path for the Stage OU
+  ProdOuArn:
+    Type: String
+    Description: ARN of the Prod OU
+  ProdOuPath:
+    Type: String
+    Description: Org path for the Prod OU
+
+Resources:
+
+  # ============================================================
+  # KMS key for CloudWatch Logs encryption at rest
+  # ============================================================
+  LogsKmsKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: CMK for APG Lattice service-network access log groups
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EnableRootAccountAdmin
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: AllowCloudWatchLogs
+            Effect: Allow
+            Principal:
+              Service: !Sub 'logs.${AWS::Region}.amazonaws.com'
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:Describe*
+            Resource: '*'
+            Condition:
+              ArnLike:
+                'kms:EncryptionContext:aws:logs:arn': !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+
+  # ============================================================
+  # Dead-letter queue for the VPCE DNS lookup custom resource
+  # ============================================================
+  VpceDnsLookupDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600
+      KmsMasterKeyId: alias/aws/sqs
+
+  # ============================================================
+  # Lambda to look up VPC Endpoint DNS names dynamically
+  # ============================================================
+  VpceDnsLookupManagedPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Allows the VPCE DNS lookup function to describe interface VPC endpoints
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - ec2:DescribeVpcEndpoints
+            Resource: '*'
+          - Effect: Allow
+            Action:
+              - sqs:SendMessage
+            Resource: !GetAtt VpceDnsLookupDlq.Arn
+
+  VpceDnsLookupRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - !Ref VpceDnsLookupManagedPolicy
+
+  VpceDnsLookupFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-vpce-dns-lookup'
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 60
+      ReservedConcurrentExecutions: 1
+      Role: !GetAtt VpceDnsLookupRole.Arn
+      DeadLetterConfig:
+        TargetArn: !GetAtt VpceDnsLookupDlq.Arn
+      Code:
+        ZipFile: |
+          import boto3, json, urllib3
+          http = urllib3.PoolManager()
+          def send_cfn(event, context, status, data, reason=''):
+            body = json.dumps({
+              'Status': status,
+              'Reason': reason or f'See CloudWatch Log Stream: {context.log_stream_name}',
+              'PhysicalResourceId': context.log_stream_name,
+              'StackId': event['StackId'],
+              'RequestId': event['RequestId'],
+              'LogicalResourceId': event['LogicalResourceId'],
+              'Data': data
+            })
+            http.request('PUT', event['ResponseURL'], body=body,
+              headers={'Content-Type': ''})
+          def handler(event, context):
+            if event['RequestType'] == 'Delete':
+              send_cfn(event, context, 'SUCCESS', {})
+              return
+            try:
+              vpc_id = event['ResourceProperties']['VpcId']
+              ec2 = boto3.client('ec2')
+              paginator = ec2.get_paginator('describe_vpc_endpoints')
+              result = {}
+              for page in paginator.paginate(Filters=[
+                {'Name': 'vpc-id', 'Values': [vpc_id]},
+                {'Name': 'vpc-endpoint-type', 'Values': ['Interface']}
+              ]):
+                for ep in page['VpcEndpoints']:
+                  parts = ep['ServiceName'].split('.')
+                  region_idx = None
+                  for i, p in enumerate(parts):
+                    if p.startswith('us-') or p.startswith('eu-') or p.startswith('ap-') or p.startswith('sa-') or p.startswith('ca-') or p.startswith('me-') or p.startswith('af-'):
+                      region_idx = i
+                      break
+                  svc_key = '.'.join(parts[region_idx+1:]) if region_idx else parts[-1]
+                  dns_entries = ep.get('DnsEntries', [])
+                  if dns_entries:
+                    dns_name = dns_entries[0]['DnsName']
+                    cfn_key = svc_key.replace('.', '_').replace('-', '_')
+                    result[cfn_key] = dns_name
+                    print(f'Found endpoint: {svc_key} -> {dns_name}')
+              send_cfn(event, context, 'SUCCESS', result)
+            except Exception as e:
+              print(f'Error: {e}')
+              send_cfn(event, context, 'FAILED', {}, reason=str(e))
+
+  VpceDnsLookup:
+    Type: Custom::VpceDnsLookup
+    Properties:
+      ServiceToken: !GetAtt VpceDnsLookupFunction.Arn
+      VpcId: !Ref EndpointVpcId
+      # Cache-buster: change this value to force Lambda re-invocation on stack update.
+      # CloudFormation only re-invokes custom resources when properties change.
+      EndpointList: ssm,ssmmessages,ec2messages,sts,ecr.api,ecr.dkr,logs,ecs,ecs-agent,ecs-telemetry,execute-api
+
+  # ============================================================
+  # Service Networks — one per environment
+  # ============================================================
+  DevServiceNetwork:
+    Type: AWS::VpcLattice::ServiceNetwork
+    Properties:
+      Name: sn-dev-shared
+      AuthType: AWS_IAM
+      Tags:
+        - Key: Name
+          Value: sn-dev-shared
+        - Key: Environment
+          Value: dev
+
+  DevServiceNetworkAuthPolicy:
+    Type: AWS::VpcLattice::AuthPolicy
+    Properties:
+      ResourceIdentifier: !Ref DevServiceNetwork
+      Policy:
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: vpc-lattice-svcs:Invoke
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:PrincipalOrgID: !Ref OrgId
+              ForAnyValue:StringLike:
+                aws:PrincipalOrgPaths:
+                  - !Sub '${DevOuPath}/*'
+
+  StageServiceNetwork:
+    Type: AWS::VpcLattice::ServiceNetwork
+    Properties:
+      Name: sn-stage-shared
+      AuthType: AWS_IAM
+      Tags:
+        - Key: Name
+          Value: sn-stage-shared
+        - Key: Environment
+          Value: stage
+
+  StageServiceNetworkAuthPolicy:
+    Type: AWS::VpcLattice::AuthPolicy
+    Properties:
+      ResourceIdentifier: !Ref StageServiceNetwork
+      Policy:
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: vpc-lattice-svcs:Invoke
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:PrincipalOrgID: !Ref OrgId
+              ForAnyValue:StringLike:
+                aws:PrincipalOrgPaths:
+                  - !Sub '${StageOuPath}/*'
+
+  ProdServiceNetwork:
+    Type: AWS::VpcLattice::ServiceNetwork
+    Properties:
+      Name: sn-prod-shared
+      AuthType: AWS_IAM
+      Tags:
+        - Key: Name
+          Value: sn-prod-shared
+        - Key: Environment
+          Value: prod
+
+  ProdServiceNetworkAuthPolicy:
+    Type: AWS::VpcLattice::AuthPolicy
+    Properties:
+      ResourceIdentifier: !Ref ProdServiceNetwork
+      Policy:
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: vpc-lattice-svcs:Invoke
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:PrincipalOrgID: !Ref OrgId
+              ForAnyValue:StringLike:
+                aws:PrincipalOrgPaths:
+                  - !Sub '${ProdOuPath}/*'
+
+  # ============================================================
+  # Service Network access logging (VPC Lattice access logs)
+  # One CloudWatch log group per environment per log type (SERVICE / RESOURCE).
+  # These are the authoritative audit trail for endpoint access and the egress
+  # chokepoint, and the observability source for the internal egress NLB.
+  # ============================================================
+  DevServiceAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /lattice/dev/service-access-logs
+      RetentionInDays: 30
+      KmsKeyId: !GetAtt LogsKmsKey.Arn
+      Tags:
+        - Key: Environment
+          Value: dev
+  DevResourceAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /lattice/dev/resource-access-logs
+      RetentionInDays: 30
+      KmsKeyId: !GetAtt LogsKmsKey.Arn
+      Tags:
+        - Key: Environment
+          Value: dev
+  DevServiceAccessLogSubscription:
+    Type: AWS::VpcLattice::AccessLogSubscription
+    Properties:
+      ResourceIdentifier: !Ref DevServiceNetwork
+      DestinationArn: !GetAtt DevServiceAccessLogGroup.Arn
+      ServiceNetworkLogType: SERVICE
+  DevResourceAccessLogSubscription:
+    Type: AWS::VpcLattice::AccessLogSubscription
+    Properties:
+      ResourceIdentifier: !Ref DevServiceNetwork
+      DestinationArn: !GetAtt DevResourceAccessLogGroup.Arn
+      ServiceNetworkLogType: RESOURCE
+
+  StageServiceAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /lattice/stage/service-access-logs
+      RetentionInDays: 30
+      KmsKeyId: !GetAtt LogsKmsKey.Arn
+      Tags:
+        - Key: Environment
+          Value: stage
+  StageResourceAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /lattice/stage/resource-access-logs
+      RetentionInDays: 30
+      KmsKeyId: !GetAtt LogsKmsKey.Arn
+      Tags:
+        - Key: Environment
+          Value: stage
+  StageServiceAccessLogSubscription:
+    Type: AWS::VpcLattice::AccessLogSubscription
+    Properties:
+      ResourceIdentifier: !Ref StageServiceNetwork
+      DestinationArn: !GetAtt StageServiceAccessLogGroup.Arn
+      ServiceNetworkLogType: SERVICE
+  StageResourceAccessLogSubscription:
+    Type: AWS::VpcLattice::AccessLogSubscription
+    Properties:
+      ResourceIdentifier: !Ref StageServiceNetwork
+      DestinationArn: !GetAtt StageResourceAccessLogGroup.Arn
+      ServiceNetworkLogType: RESOURCE
+
+  ProdServiceAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /lattice/prod/service-access-logs
+      RetentionInDays: 30
+      KmsKeyId: !GetAtt LogsKmsKey.Arn
+      Tags:
+        - Key: Environment
+          Value: prod
+  ProdResourceAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /lattice/prod/resource-access-logs
+      RetentionInDays: 30
+      KmsKeyId: !GetAtt LogsKmsKey.Arn
+      Tags:
+        - Key: Environment
+          Value: prod
+  ProdServiceAccessLogSubscription:
+    Type: AWS::VpcLattice::AccessLogSubscription
+    Properties:
+      ResourceIdentifier: !Ref ProdServiceNetwork
+      DestinationArn: !GetAtt ProdServiceAccessLogGroup.Arn
+      ServiceNetworkLogType: SERVICE
+  ProdResourceAccessLogSubscription:
+    Type: AWS::VpcLattice::AccessLogSubscription
+    Properties:
+      ResourceIdentifier: !Ref ProdServiceNetwork
+      DestinationArn: !GetAtt ProdResourceAccessLogGroup.Arn
+      ServiceNetworkLogType: RESOURCE
+
+  # ============================================================
+  # Resource Gateways
+  # ============================================================
+  EndpointResourceGateway:
+    Type: AWS::VpcLattice::ResourceGateway
+    Properties:
+      Name: endpoint-resource-gw
+      VpcIdentifier: !Ref EndpointVpcId
+      SubnetIds:
+        - !Ref EndpointSubnetAId
+        - !Ref EndpointSubnetBId
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroupId
+      IpAddressType: IPV4
+      Tags:
+        - Key: Name
+          Value: endpoint-resource-gw
+
+  # Egress Resource Gateway removed — egress proxy now uses
+  # VPC Lattice Service + Target Group (standalone stack)
+
+  # ============================================================
+  # RAM Shares
+  # ============================================================
+  DevRAMShare:
+    Type: AWS::RAM::ResourceShare
+    Properties:
+      Name: vpc-lattice-sn-dev-share
+      AllowExternalPrincipals: false
+      ResourceArns:
+        - !Ref DevServiceNetwork
+      Principals:
+        - !Ref DevOuArn
+      Tags:
+        - Key: Name
+          Value: vpc-lattice-sn-dev-share
+
+  StageRAMShare:
+    Type: AWS::RAM::ResourceShare
+    Properties:
+      Name: vpc-lattice-sn-stage-share
+      AllowExternalPrincipals: false
+      ResourceArns:
+        - !Ref StageServiceNetwork
+      Principals:
+        - !Ref StageOuArn
+      Tags:
+        - Key: Name
+          Value: vpc-lattice-sn-stage-share
+
+  ProdRAMShare:
+    Type: AWS::RAM::ResourceShare
+    Properties:
+      Name: vpc-lattice-sn-prod-share
+      AllowExternalPrincipals: false
+      ResourceArns:
+        - !Ref ProdServiceNetwork
+      Principals:
+        - !Ref ProdOuArn
+      Tags:
+        - Key: Name
+          Value: vpc-lattice-sn-prod-share
+
+  # ============================================================
+  # Resource Configurations — 10 endpoint RCs + 1 egress proxy RC
+  # VPCE DNS names resolved dynamically from VpceDnsLookup
+  # ============================================================
+
+  SsmResourceConfig:
+    Type: AWS::VpcLattice::ResourceConfiguration
+    Properties:
+      Name: ssm-endpoint-rc
+      CustomDomainName: !Sub ssm.${AWS::Region}.amazonaws.com
+      ResourceConfigurationType: SINGLE
+      ResourceGatewayId: !GetAtt EndpointResourceGateway.Id
+      PortRanges:
+        - '443'
+      ProtocolType: TCP
+      ResourceConfigurationDefinition:
+        DnsResource:
+          DomainName: !GetAtt VpceDnsLookup.ssm
+          IpAddressType: IPV4
+      Tags:
+        - Key: Name
+          Value: ssm-endpoint-rc
+
+  SsmSNAssocDev:
+    Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
+    Properties:
+      ServiceNetworkId: !GetAtt DevServiceNetwork.Id
+      ResourceConfigurationId: !GetAtt SsmResourceConfig.Id
+      PrivateDnsEnabled: true
+  SsmSNAssocStage:
+    DependsOn: SsmSNAssocDev
+    Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
+    Properties:
+      ServiceNetworkId: !GetAtt StageServiceNetwork.Id
+      ResourceConfigurationId: !GetAtt SsmResourceConfig.Id
+      PrivateDnsEnabled: true
+  SsmSNAssocProd:
+    DependsOn: SsmSNAssocStage
+    Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
+    Properties:
+      ServiceNetworkId: !GetAtt ProdServiceNetwork.Id
+      ResourceConfigurationId: !GetAtt SsmResourceConfig.Id
+      PrivateDnsEnabled: true
+
+  SsmmessagesResourceConfig:
+    Type: AWS::VpcLattice::ResourceConfiguration
+    Properties:
+      Name: ssmmessages-endpoint-rc
+      CustomDomainName: !Sub ssmmessages.${AWS::Region}.amazonaws.com
+      ResourceConfigurationType: SINGLE
+      ResourceGatewayId: !GetAtt EndpointResourceGateway.Id
+      PortRanges:
+        - '443'
+      ProtocolType: TCP
+      ResourceConfigurationDefinition:
+        DnsResource:
+          DomainName: !GetAtt VpceDnsLookup.ssmmessages
+          IpAddressType: IPV4
+      Tags:
+        - Key: Name
+          Value: ssmmessages-endpoint-rc
+
+  SsmmessagesSNAssocDev:
+    DependsOn: SsmSNAssocProd
+    Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
+    Properties:
+      ServiceNetworkId: !GetAtt DevServiceNetwork.Id
+      ResourceConfigurationId: !GetAtt SsmmessagesResourceConfig.Id
+      PrivateDnsEnabled: true
+  SsmmessagesSNAssocStage:
+    DependsOn: SsmmessagesSNAssocDev
+    Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
+    Properties:
+      ServiceNetworkId: !GetAtt StageServiceNetwork.Id
+      ResourceConfigurationId: !GetAtt SsmmessagesResourceConfig.Id
+      PrivateDnsEnabled: true
+  SsmmessagesSNAssocProd:
+    DependsOn: SsmmessagesSNAssocStage
+    Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
+    Properties:
+      ServiceNetworkId: !GetAtt ProdServiceNetwork.Id
+      ResourceConfigurationId: !GetAtt SsmmessagesResourceConfig.Id
+      PrivateDnsEnabled: true
+
+  Ec2messagesResourceConfig:
+    Type: AWS::VpcLattice::ResourceConfiguration
+    Properties:
+      Name: ec2messages-endpoint-rc
+      CustomDomainName: !Sub ec2messages.${AWS::Region}.amazonaws.com
+      ResourceConfigurationType: SINGLE
+      ResourceGatewayId: !GetAtt EndpointResourceGateway.Id
+      PortRanges:
+        - '443'
+      ProtocolType: TCP
+      ResourceConfigurationDefinition:
+        DnsResource:
+          DomainName: !GetAtt VpceDnsLookup.ec2messages
+          IpAddressType: IPV4
+      Tags:
+        - Key: Name
+          Value: ec2messages-endpoint-rc
+
+  Ec2messagesSNAssocDev:
+    DependsOn: SsmmessagesSNAssocProd
+    Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
+    Properties:
+      ServiceNetworkId: !GetAtt DevServiceNetwork.Id
+      ResourceConfigurationId: !GetAtt Ec2messagesResourceConfig.Id
+      PrivateDnsEnabled: true
+  Ec2messagesSNAssocStage:
+    DependsOn: Ec2messagesSNAssocDev
+    Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
+    Properties:
+      ServiceNetworkId: !GetAtt StageServiceNetwork.Id
+      ResourceConfigurationId: !GetAtt Ec2messagesResourceConfig.Id
+      PrivateDnsEnabled: true
+  Ec2messagesSNAssocProd:
+    DependsOn: Ec2messagesSNAssocStage
+    Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
+    Properties:
+      ServiceNetworkId: !GetAtt ProdServiceNetwork.Id
+      ResourceConfigurationId: !GetAtt Ec2messagesResourceConfig.Id
+      PrivateDnsEnabled: true
+
+  StsResourceConfig:
+    Type: AWS::VpcLattice::ResourceConfiguration
+    Properties:
+      Name: sts-endpoint-rc
+      CustomDomainName: !Sub sts.${AWS::Region}.amazonaws.com
+      ResourceConfigurationType: SINGLE
+      ResourceGatewayId: !GetAtt EndpointResourceGateway.Id
+      PortRanges:
+        - '443'
+      ProtocolType: TCP
+      ResourceConfigurationDefinition:
+        DnsResource:
+          DomainName: !GetAtt VpceDnsLookup.sts
+          IpAddressType: IPV4
+      Tags:
+        - Key: Name
+          Value: sts-endpoint-rc
+
+  StsSNAssocDev:
+    DependsOn: Ec2messagesSNAssocProd
+    Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
+    Properties:
+      ServiceNetworkId: !GetAtt DevServiceNetwork.Id
+      ResourceConfigurationId: !GetAtt StsResourceConfig.Id
+      PrivateDnsEnabled: true
+  StsSNAssocStage:
+    DependsOn: StsSNAssocDev
+    Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
+    Properties:
+      ServiceNetworkId: !GetAtt StageServiceNetwork.Id
+      ResourceConfigurationId: !GetAtt StsResourceConfig.Id
+      PrivateDnsEnabled: true
+  StsSNAssocProd:
+    DependsOn: StsSNAssocStage
+    Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
+    Properties:
+      ServiceNetworkId: !GetAtt ProdServiceNetwork.Id
+      ResourceConfigurationId: !GetAtt StsResourceConfig.Id
+      PrivateDnsEnabled: true
+
+  EcrApiResourceConfig:
+    Type: AWS::VpcLattice::ResourceConfiguration
+    Properties:
+      Name: ecr-api-endpoint-rc
+      CustomDomainName: !Sub api.ecr.${AWS::Region}.amazonaws.com
+      ResourceConfigurationType: SINGLE
+      ResourceGatewayId: !GetAtt EndpointResourceGateway.Id
+      PortRanges:
+        - '443'
+      ProtocolType: TCP
+      ResourceConfigurationDefinition:
+        DnsResource:
+          DomainName: !GetAtt VpceDnsLookup.ecr_api
+          IpAddressType: IPV4
+      Tags:
+        - Key: Name
+          Value: ecr-api-endpoint-rc
+
+  EcrApiSNAssocDev:
+    DependsOn: StsSNAssocProd
+    Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
+    Properties:
+      ServiceNetworkId: !GetAtt DevServiceNetwork.Id
+      ResourceConfigurationId: !GetAtt EcrApiResourceConfig.Id
+      PrivateDnsEnabled: true
+  EcrApiSNAssocStage:
+    DependsOn: EcrApiSNAssocDev
+    Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
+    Properties:
+      ServiceNetworkId: !GetAtt StageServiceNetwork.Id
+      ResourceConfigurationId: !GetAtt EcrApiResourceConfig.Id
+      PrivateDnsEnabled: true
+  EcrApiSNAssocProd:
+    DependsOn: EcrApiSNAssocStage
+    Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
+    Properties:
+      ServiceNetworkId: !GetAtt ProdServiceNetwork.Id
+      ResourceConfigurationId: !GetAtt EcrApiResourceConfig.Id
+      PrivateDnsEnabled: true
+
+  EcrDkrResourceConfig:
+    Type: AWS::VpcLattice::ResourceConfiguration
+    Properties:
+      Name: ecr-dkr-endpoint-rc
+      CustomDomainName: !Sub dkr.ecr.${AWS::Region}.amazonaws.com
+      ResourceConfigurationType: SINGLE
+      ResourceGatewayId: !GetAtt EndpointResourceGateway.Id
+      PortRanges:
+        - '443'
+      ProtocolType: TCP
+      ResourceConfigurationDefinition:
+        DnsResource:
+          DomainName: !GetAtt VpceDnsLookup.ecr_dkr
+          IpAddressType: IPV4
+      Tags:
+        - Key: Name
+          Value: ecr-dkr-endpoint-rc
+
+  EcrDkrSNAssocDev:
+    DependsOn: EcrApiSNAssocProd
+    Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
+    Properties:
+      ServiceNetworkId: !GetAtt DevServiceNetwork.Id
+      ResourceConfigurationId: !GetAtt EcrDkrResourceConfig.Id
+      PrivateDnsEnabled: true
+  EcrDkrSNAssocStage:
+    DependsOn: EcrDkrSNAssocDev
+    Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
+    Properties:
+      ServiceNetworkId: !GetAtt StageServiceNetwork.Id
+      ResourceConfigurationId: !GetAtt EcrDkrResourceConfig.Id
+      PrivateDnsEnabled: true
+  EcrDkrSNAssocProd:
+    DependsOn: EcrDkrSNAssocStage
+    Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
+    Properties:
+      ServiceNetworkId: !GetAtt ProdServiceNetwork.Id
+      ResourceConfigurationId: !GetAtt EcrDkrResourceConfig.Id
+      PrivateDnsEnabled: true
+
+  LogsResourceConfig:
+    Type: AWS::VpcLattice::ResourceConfiguration
+    Properties:
+      Name: logs-endpoint-rc
+      CustomDomainName: !Sub logs.${AWS::Region}.amazonaws.com
+      ResourceConfigurationType: SINGLE
+      ResourceGatewayId: !GetAtt EndpointResourceGateway.Id
+      PortRanges:
+        - '443'
+      ProtocolType: TCP
+      ResourceConfigurationDefinition:
+        DnsResource:
+          DomainName: !GetAtt VpceDnsLookup.logs
+          IpAddressType: IPV4
+      Tags:
+        - Key: Name
+          Value: logs-endpoint-rc
+
+  LogsSNAssocDev:
+    DependsOn: EcrDkrSNAssocProd
+    Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
+    Properties:
+      ServiceNetworkId: !GetAtt DevServiceNetwork.Id
+      ResourceConfigurationId: !GetAtt LogsResourceConfig.Id
+      PrivateDnsEnabled: true
+  LogsSNAssocStage:
+    DependsOn: LogsSNAssocDev
+    Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
+    Properties:
+      ServiceNetworkId: !GetAtt StageServiceNetwork.Id
+      ResourceConfigurationId: !GetAtt LogsResourceConfig.Id
+      PrivateDnsEnabled: true
+  LogsSNAssocProd:
+    DependsOn: LogsSNAssocStage
+    Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
+    Properties:
+      ServiceNetworkId: !GetAtt ProdServiceNetwork.Id
+      ResourceConfigurationId: !GetAtt LogsResourceConfig.Id
+      PrivateDnsEnabled: true
+
+  EcsResourceConfig:
+    Type: AWS::VpcLattice::ResourceConfiguration
+    Properties:
+      Name: ecs-endpoint-rc
+      CustomDomainName: !Sub ecs.${AWS::Region}.amazonaws.com
+      ResourceConfigurationType: SINGLE
+      ResourceGatewayId: !GetAtt EndpointResourceGateway.Id
+      PortRanges:
+        - '443'
+      ProtocolType: TCP
+      ResourceConfigurationDefinition:
+        DnsResource:
+          DomainName: !GetAtt VpceDnsLookup.ecs
+          IpAddressType: IPV4
+      Tags:
+        - Key: Name
+          Value: ecs-endpoint-rc
+
+  EcsSNAssocDev:
+    DependsOn: LogsSNAssocProd
+    Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
+    Properties:
+      ServiceNetworkId: !GetAtt DevServiceNetwork.Id
+      ResourceConfigurationId: !GetAtt EcsResourceConfig.Id
+      PrivateDnsEnabled: true
+  EcsSNAssocStage:
+    DependsOn: EcsSNAssocDev
+    Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
+    Properties:
+      ServiceNetworkId: !GetAtt StageServiceNetwork.Id
+      ResourceConfigurationId: !GetAtt EcsResourceConfig.Id
+      PrivateDnsEnabled: true
+  EcsSNAssocProd:
+    DependsOn: EcsSNAssocStage
+    Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
+    Properties:
+      ServiceNetworkId: !GetAtt ProdServiceNetwork.Id
+      ResourceConfigurationId: !GetAtt EcsResourceConfig.Id
+      PrivateDnsEnabled: true
+
+  EcsAgentResourceConfig:
+    Type: AWS::VpcLattice::ResourceConfiguration
+    Properties:
+      Name: ecs-agent-endpoint-rc
+      CustomDomainName: !Sub ecs-agent.${AWS::Region}.amazonaws.com
+      ResourceConfigurationType: SINGLE
+      ResourceGatewayId: !GetAtt EndpointResourceGateway.Id
+      PortRanges:
+        - '443'
+      ProtocolType: TCP
+      ResourceConfigurationDefinition:
+        DnsResource:
+          DomainName: !GetAtt VpceDnsLookup.ecs_agent
+          IpAddressType: IPV4
+      Tags:
+        - Key: Name
+          Value: ecs-agent-endpoint-rc
+
+  EcsAgentSNAssocDev:
+    DependsOn: EcsSNAssocProd
+    Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
+    Properties:
+      ServiceNetworkId: !GetAtt DevServiceNetwork.Id
+      ResourceConfigurationId: !GetAtt EcsAgentResourceConfig.Id
+      PrivateDnsEnabled: true
+  EcsAgentSNAssocStage:
+    DependsOn: EcsAgentSNAssocDev
+    Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
+    Properties:
+      ServiceNetworkId: !GetAtt StageServiceNetwork.Id
+      ResourceConfigurationId: !GetAtt EcsAgentResourceConfig.Id
+      PrivateDnsEnabled: true
+  EcsAgentSNAssocProd:
+    DependsOn: EcsAgentSNAssocStage
+    Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
+    Properties:
+      ServiceNetworkId: !GetAtt ProdServiceNetwork.Id
+      ResourceConfigurationId: !GetAtt EcsAgentResourceConfig.Id
+      PrivateDnsEnabled: true
+
+  EcsTelemetryResourceConfig:
+    Type: AWS::VpcLattice::ResourceConfiguration
+    Properties:
+      Name: ecs-telemetry-endpoint-rc
+      CustomDomainName: !Sub ecs-telemetry.${AWS::Region}.amazonaws.com
+      ResourceConfigurationType: SINGLE
+      ResourceGatewayId: !GetAtt EndpointResourceGateway.Id
+      PortRanges:
+        - '443'
+      ProtocolType: TCP
+      ResourceConfigurationDefinition:
+        DnsResource:
+          DomainName: !GetAtt VpceDnsLookup.ecs_telemetry
+          IpAddressType: IPV4
+      Tags:
+        - Key: Name
+          Value: ecs-telemetry-endpoint-rc
+
+  EcsTelemetrySNAssocDev:
+    DependsOn: EcsAgentSNAssocProd
+    Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
+    Properties:
+      ServiceNetworkId: !GetAtt DevServiceNetwork.Id
+      ResourceConfigurationId: !GetAtt EcsTelemetryResourceConfig.Id
+      PrivateDnsEnabled: true
+  EcsTelemetrySNAssocStage:
+    DependsOn: EcsTelemetrySNAssocDev
+    Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
+    Properties:
+      ServiceNetworkId: !GetAtt StageServiceNetwork.Id
+      ResourceConfigurationId: !GetAtt EcsTelemetryResourceConfig.Id
+      PrivateDnsEnabled: true
+  EcsTelemetrySNAssocProd:
+    DependsOn: EcsTelemetrySNAssocStage
+    Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
+    Properties:
+      ServiceNetworkId: !GetAtt ProdServiceNetwork.Id
+      ResourceConfigurationId: !GetAtt EcsTelemetryResourceConfig.Id
+      PrivateDnsEnabled: true
+
+  ExecuteApiResourceConfig:
+    Type: AWS::VpcLattice::ResourceConfiguration
+    Properties:
+      Name: execute-api-endpoint-rc
+      CustomDomainName: !Sub execute-api.${AWS::Region}.amazonaws.com
+      ResourceConfigurationType: SINGLE
+      ResourceGatewayId: !GetAtt EndpointResourceGateway.Id
+      PortRanges:
+        - '443'
+      ProtocolType: TCP
+      ResourceConfigurationDefinition:
+        DnsResource:
+          DomainName: !GetAtt VpceDnsLookup.execute_api
+          IpAddressType: IPV4
+      Tags:
+        - Key: Name
+          Value: execute-api-endpoint-rc
+
+  ExecuteApiSNAssocDev:
+    DependsOn: EcsTelemetrySNAssocProd
+    Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
+    Properties:
+      ServiceNetworkId: !GetAtt DevServiceNetwork.Id
+      ResourceConfigurationId: !GetAtt ExecuteApiResourceConfig.Id
+      PrivateDnsEnabled: true
+  ExecuteApiSNAssocStage:
+    DependsOn: ExecuteApiSNAssocDev
+    Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
+    Properties:
+      ServiceNetworkId: !GetAtt StageServiceNetwork.Id
+      ResourceConfigurationId: !GetAtt ExecuteApiResourceConfig.Id
+      PrivateDnsEnabled: true
+  ExecuteApiSNAssocProd:
+    DependsOn: ExecuteApiSNAssocStage
+    Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
+    Properties:
+      ServiceNetworkId: !GetAtt ProdServiceNetwork.Id
+      ResourceConfigurationId: !GetAtt ExecuteApiResourceConfig.Id
+      PrivateDnsEnabled: true
+
+Outputs:
+  DevServiceNetworkId:
+    Description: Dev Service Network ID
+    Value: !GetAtt DevServiceNetwork.Id
+  DevServiceNetworkArn:
+    Description: Dev Service Network ARN
+    Value: !Ref DevServiceNetwork
+  StageServiceNetworkId:
+    Description: Stage Service Network ID
+    Value: !GetAtt StageServiceNetwork.Id
+  StageServiceNetworkArn:
+    Description: Stage Service Network ARN
+    Value: !Ref StageServiceNetwork
+  ProdServiceNetworkId:
+    Description: Prod Service Network ID
+    Value: !GetAtt ProdServiceNetwork.Id
+  ProdServiceNetworkArn:
+    Description: Prod Service Network ARN
+    Value: !Ref ProdServiceNetwork
+  EndpointResourceGatewayId:
+    Description: Endpoint Resource Gateway ID
+    Value: !GetAtt EndpointResourceGateway.Id
+  SsmVpceDns:
+    Description: SSM VPC Endpoint DNS name resolved by Lambda
+    Value: !GetAtt VpceDnsLookup.ssm
+  StsVpceDns:
+    Description: STS VPC Endpoint DNS name resolved by Lambda
+    Value: !GetAtt VpceDnsLookup.sts

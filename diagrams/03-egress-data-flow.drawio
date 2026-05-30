@@ -1,0 +1,160 @@
+<mxfile host="65bd71144e">
+    <diagram name="Egress Data Flow" id="page-1">
+        <mxGraphModel dx="1210" dy="816" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="2" value="&lt;span style=&quot;color: rgb(35, 47, 62); font-size: 14px; font-weight: 700; text-align: left; white-space: nowrap;&quot;&gt;Figure 3: Egress data flow (Workload reaches the internet through the Lattice-exposed Squid proxy with FQDN allowlist filtering)&lt;/span&gt;" style="fillColor=none;strokeColor=#5A6C86;verticalAlign=bottom;fontStyle=0;fontColor=#5A6C86;whiteSpace=wrap;html=1;strokeWidth=3;" vertex="1" parent="1">
+                    <mxGeometry x="210" y="480" width="1460" height="810" as="geometry"/>
+                </mxCell>
+                <mxCell id="3" value="Workload VPC &lt;br&gt;&lt;font style=&quot;font-size: 12px;&quot;&gt;&lt;i&gt;(HTTP_PROXY/HTTPS_PROXY = http://squid-proxy.egress.internal:3128)&lt;/i&gt;&lt;/font&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=14;fontStyle=0;container=0;pointerEvents=0;collapsible=0;recursiveResize=0;shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_vpc2;strokeColor=#1B660F;fillColor=none;verticalAlign=top;align=left;spacingLeft=30;fontColor=#1B660F;dashed=0;" vertex="1" parent="1">
+                    <mxGeometry x="250" y="510" width="470" height="450" as="geometry"/>
+                </mxCell>
+                <mxCell id="4" value="Workload" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=14;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ec2;" vertex="1" parent="1">
+                    <mxGeometry x="300" y="600" width="60" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="5" value="Route 53 Resolver" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#8C4FFF;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=14;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.route_53_resolver;" vertex="1" parent="1">
+                    <mxGeometry x="620" y="600" width="60" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="6" value="Lattice-managed&lt;br&gt;Private Hosted Zone&lt;br&gt;&lt;i&gt;&lt;font style=&quot;font-size: 12px;&quot;&gt;squid-proxy.egress.internal&lt;/font&gt;&lt;/i&gt;" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#8C4FFF;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=14;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.route_53;" vertex="1" parent="1">
+                    <mxGeometry x="530" y="750" width="60" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="7" value="&lt;font style=&quot;font-size: 10px;&quot;&gt;&lt;i style=&quot;&quot;&gt;lookup squid-proxy.egress.internal&lt;/i&gt;&lt;/font&gt;" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#2E73B8;rounded=0;fontSize=14;fontColor=#2E73B8;entryX=-0.038;entryY=0.319;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="1" target="5">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="360" y="620" as="sourcePoint"/>
+                        <mxPoint x="538" y="620" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="8" value="0" style="ellipse;whiteSpace=wrap;html=1;fillColor=#879196;strokeColor=none;fontColor=#FFFFFF;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+                    <mxGeometry x="390" y="600" width="26" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="9" style="endArrow=classic;html=1;strokeWidth=1.5;strokeColor=#2E73B8;rounded=0;dashed=1;fontSize=14;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="5" target="6">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="650" y="780"/>
+                        </Array>
+                        <mxPoint x="711" y="632" as="sourcePoint"/>
+                        <mxPoint x="610" y="780" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="10" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#2E73B8;rounded=0;dashed=1;fontSize=14;fontColor=#2E73B8;align=center;entryX=1.018;entryY=0.867;entryDx=0;entryDy=0;entryPerimeter=0;verticalAlign=middle;exitX=-0.017;exitY=0.862;exitDx=0;exitDy=0;exitPerimeter=0;" edge="1" parent="1" source="5" target="4">
+                    <mxGeometry x="-0.6011" relative="1" as="geometry">
+                        <mxPoint as="offset"/>
+                        <mxPoint x="620" y="660" as="sourcePoint"/>
+                        <mxPoint x="400.00000000000006" y="650" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="11" value="&lt;span style=&quot;color: rgb(46, 115, 184);&quot;&gt;&lt;font style=&quot;font-size: 10px;&quot;&gt;&lt;i&gt;Returns IP managed by VPC Lattice&lt;/i&gt;&lt;/font&gt;&lt;/span&gt;" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" connectable="0" vertex="1" parent="10">
+                    <mxGeometry x="0.0857" y="1" relative="1" as="geometry">
+                        <mxPoint as="offset"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="12" value="DNS resolution (proxy domain to Lattice IP)&lt;br&gt;&lt;i&gt;&lt;font style=&quot;font-size: 10px;&quot;&gt;only resolves after the VPC association&lt;/font&gt;&lt;/i&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;fontSize=14;fontColor=#879196;" vertex="1" parent="1">
+                    <mxGeometry x="290" y="900" width="390" height="45" as="geometry"/>
+                </mxCell>
+                <mxCell id="13" value="VPC Lattice&#10;(Service Network)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#8C4FFF;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=14;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.vpc_lattice;" vertex="1" parent="1">
+                    <mxGeometry x="850" y="600" width="60" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="14" value="Proxied request, TCP 3128" style="endArrow=classic;html=1;strokeWidth=2.5;strokeColor=#8B0000;rounded=0;fontSize=14;fontColor=#8B0000;edgeStyle=orthogonalEdgeStyle;curved=0;" edge="1" parent="1" source="4">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="330" y="570"/>
+                            <mxPoint x="880" y="570"/>
+                        </Array>
+                        <mxPoint x="360" y="580" as="sourcePoint"/>
+                        <mxPoint x="880" y="598" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="15" value="1" style="ellipse;whiteSpace=wrap;html=1;fillColor=#2E73B8;strokeColor=none;fontColor=#FFFFFF;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+                    <mxGeometry x="490" y="550" width="26" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="16" value="Network account&lt;br&gt;&lt;font style=&quot;font-size: 12px;&quot;&gt;&lt;i&gt;Egress VPC&lt;/i&gt;&lt;/font&gt;" style="sketch=0;outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=14;fontStyle=0;container=0;pointerEvents=0;collapsible=0;recursiveResize=0;shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_vpc2;strokeColor=#0E7490;fillColor=none;verticalAlign=top;align=left;spacingLeft=30;fontColor=#0E7490;dashed=0;" vertex="1" parent="1">
+                    <mxGeometry x="990" y="530" width="470" height="530" as="geometry"/>
+                </mxCell>
+                <mxCell id="17" value="Egress&#10;Resource Gateway ENI" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#8C4FFF;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=14;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.endpoint;" vertex="1" parent="1">
+                    <mxGeometry x="1050" y="600" width="60" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="18" value="&amp;nbsp; RGW target" style="endArrow=classic;html=1;strokeWidth=2.5;strokeColor=#8B0000;rounded=1;fontSize=14;fontColor=#8B0000;" edge="1" parent="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="910" y="630" as="sourcePoint"/>
+                        <mxPoint x="1048" y="630" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="19" value="2" style="ellipse;whiteSpace=wrap;html=1;fillColor=#2E73B8;strokeColor=none;fontColor=#FFFFFF;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+                    <mxGeometry x="957" y="590" width="26" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="20" value="Internal NLB :3128" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#8C4FFF;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=14;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.network_load_balancer;" vertex="1" parent="1">
+                    <mxGeometry x="1250" y="600" width="60" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="21" value="NLB listener" style="endArrow=classic;html=1;strokeWidth=2.5;strokeColor=#8B0000;rounded=1;fontSize=14;fontColor=#8B0000;" edge="1" parent="1">
+                    <mxGeometry x="-0.0044" relative="1" as="geometry">
+                        <mxPoint as="offset"/>
+                        <mxPoint x="1110" y="630" as="sourcePoint"/>
+                        <mxPoint x="1248" y="630" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="22" value="3" style="ellipse;whiteSpace=wrap;html=1;fillColor=#2E73B8;strokeColor=none;fontColor=#FFFFFF;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+                    <mxGeometry x="1166" y="590" width="26" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="23" value="Squid on ECS Fargate&lt;br&gt;&lt;font style=&quot;font-size: 12px;&quot;&gt;&lt;i&gt;(FQDN allowlist)&lt;/i&gt;&lt;/font&gt;" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=14;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.fargate;" vertex="1" parent="1">
+                    <mxGeometry x="1250" y="780" width="60" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="24" value="Squid task" style="endArrow=classic;html=1;strokeWidth=2.5;strokeColor=#8B0000;rounded=1;fontSize=14;fontColor=#8B0000;" edge="1" parent="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint as="offset"/>
+                        <mxPoint x="1280" y="660" as="sourcePoint"/>
+                        <mxPoint x="1280" y="780" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="25" value="4" style="ellipse;whiteSpace=wrap;html=1;fillColor=#2E73B8;strokeColor=none;fontColor=#FFFFFF;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+                    <mxGeometry x="1220" y="700" width="26" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="26" value="&lt;font style=&quot;font-size: 12px;&quot;&gt;FQDN on&lt;br&gt;allowlist?&lt;/font&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF6E5;strokeColor=#CC8800;fontSize=14;fontColor=#232F3E;" vertex="1" parent="1">
+                    <mxGeometry x="1040" y="795" width="120" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="27" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#8B0000;rounded=1;fontSize=14;" edge="1" parent="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="1248" y="830" as="sourcePoint"/>
+                        <mxPoint x="1162" y="830" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="28" value="5" style="ellipse;whiteSpace=wrap;html=1;fillColor=#2E73B8;strokeColor=none;fontColor=#FFFFFF;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+                    <mxGeometry x="1187" y="817" width="26" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="29" value="deny (blocked)" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;fontSize=14;fontStyle=1;fontColor=#8B0000;" vertex="1" parent="1">
+                    <mxGeometry x="1040" y="880" width="120" height="24" as="geometry"/>
+                </mxCell>
+                <mxCell id="30" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#8B0000;rounded=0;dashed=1;fontSize=14;" edge="1" parent="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="1100" y="865" as="sourcePoint"/>
+                        <mxPoint x="1100" y="880" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="31" value="NAT Gateway" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#8C4FFF;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=14;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.nat_gateway;" vertex="1" parent="1">
+                    <mxGeometry x="1252" y="960" width="56" height="56" as="geometry"/>
+                </mxCell>
+                <mxCell id="32" value="Allow" style="endArrow=classic;html=1;strokeWidth=2.5;strokeColor=#1B660F;rounded=1;fontSize=14;fontColor=#1B660F;" edge="1" parent="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="1280" y="840" as="sourcePoint"/>
+                        <mxPoint x="1280" y="960" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="33" value="6" style="ellipse;whiteSpace=wrap;html=1;fillColor=#2E73B8;strokeColor=none;fontColor=#FFFFFF;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+                    <mxGeometry x="1230" y="888" width="26" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="34" value="&lt;font style=&quot;font-size: 14px;&quot;&gt;Internet&lt;/font&gt;" style="ellipse;shape=cloud;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#157eb2;fontSize=11;fontColor=#5A6B7B;align=center;verticalAlign=middle;fontFamily=Helvetica;" vertex="1" parent="1">
+                    <mxGeometry x="1480" y="953" width="120" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="35" value="to the internet" style="endArrow=classic;html=1;strokeWidth=2.5;strokeColor=#1B660F;rounded=1;fontSize=14;fontColor=#1B660F;entryX=0.16;entryY=0.55;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="1" target="34">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="1308" y="990" as="sourcePoint"/>
+                        <mxPoint x="1418" y="997" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="36" value="&lt;font style=&quot;font-size: 12px;&quot;&gt;Steps&lt;br&gt;(0) DNS: the workload resolves squid-proxy.egress.internal via the Route 53 Resolver and the Lattice-managed Private Hosted Zone, which returns an IP managed by VPC Lattice.&lt;br&gt;(1) The workload (HTTP_PROXY set to squid-proxy.egress.internal on 3128) makes an outbound request to the VPC Lattice IP over TCP 3128, entering its Service Network.&lt;br&gt;(2) The service network forwards the raw TCP flow to the egress resource gateway, which targets the internal NLB DNS name.&lt;br&gt;(3) The resource gateway forwards to the internal NLB on its :3128 listener.&lt;br&gt;(4) The NLB sends the connection to a healthy Squid Fargate task.&lt;br&gt;(5) Squid applies the FQDN allowlist — permitted domains proceed; non-allowlisted domains are denied.&lt;br&gt;(6) Allowed traffic egresses to the internet via the Egress VPC NAT Gateway. The response returns along the same path.&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FBFBFB;strokeColor=#879196;align=left;verticalAlign=top;spacingLeft=12;spacingTop=10;fontSize=14;fontColor=#232F3E;" vertex="1" parent="1">
+                    <mxGeometry x="250" y="1080" width="1380" height="160" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+</mxfile>

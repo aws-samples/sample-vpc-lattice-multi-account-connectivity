@@ -1,0 +1,107 @@
+<mxfile host="65bd71144e">
+    <diagram name="Ingress Data Flow" id="page-1">
+        <mxGraphModel dx="2379" dy="816" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="2" value="&lt;span style=&quot;color: rgb(35, 47, 62); font-size: 14px; font-weight: 700; text-align: left; white-space: nowrap;&quot;&gt;Figure 4: Ingress data flow (An external, on-premises, or cross-Region consumer reaches the shared fabric through a Service Network Endpoint (SN-E))&lt;/span&gt;" style="fillColor=none;strokeColor=#5A6C86;verticalAlign=bottom;fontStyle=0;fontColor=#5A6C86;whiteSpace=wrap;html=1;strokeWidth=3;" vertex="1" parent="1">
+                    <mxGeometry x="1160" y="970" width="1540" height="730" as="geometry"/>
+                </mxCell>
+                <mxCell id="3" value="Network account" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#232F3E;strokeWidth=2;verticalAlign=top;align=left;spacingLeft=12;spacingTop=8;fontStyle=1;fontSize=14;fontColor=#232F3E;" vertex="1" parent="1">
+                    <mxGeometry x="1580" y="990" width="1020" height="500" as="geometry"/>
+                </mxCell>
+                <mxCell id="4" value="External / on-premises / other-Region consumer" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#5A6B7B;strokeWidth=2;verticalAlign=top;align=left;spacingLeft=12;spacingTop=8;fontStyle=1;fontSize=14;fontColor=#5A6B7B;" vertex="1" parent="1">
+                    <mxGeometry x="1200" y="990" width="320" height="210" as="geometry"/>
+                </mxCell>
+                <mxCell id="5" value="Consumer&#10;(app / client)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=14;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ec2;" vertex="1" parent="1">
+                    <mxGeometry x="1250" y="1080" width="60" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="6" value="Route 53 Private Hosted Zone&lt;br&gt;&lt;i&gt;&lt;font style=&quot;font-size: 12px;&quot;&gt;(SN-E CNAME/Alias record)&lt;/font&gt;&lt;/i&gt;" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#8C4FFF;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=14;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.route_53;" vertex="1" parent="1">
+                    <mxGeometry x="1890" y="1370" width="56" height="56" as="geometry"/>
+                </mxCell>
+                <mxCell id="7" value="Route 53 Resolver&lt;br&gt;&lt;font style=&quot;font-size: 12px;&quot;&gt;inbound endpoint&lt;/font&gt;" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#8C4FFF;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=14;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.route_53_resolver;" vertex="1" parent="1">
+                    <mxGeometry x="1704" y="1370" width="56" height="56" as="geometry"/>
+                </mxCell>
+                <mxCell id="8" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#2E73B8;rounded=0;fontSize=14;fontColor=#2E73B8;edgeStyle=orthogonalEdgeStyle;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;align=left;" edge="1" parent="1" source="5" target="7">
+                    <mxGeometry x="-0.2006" relative="1" as="geometry">
+                        <mxPoint as="offset"/>
+                        <Array as="points">
+                            <mxPoint x="1280" y="1400"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="9" value="&lt;span style=&quot;color: rgb(46, 115, 184); text-align: left;&quot;&gt;&lt;font style=&quot;font-size: 12px;&quot;&gt;Consumer's resolver forwards&lt;br&gt;custom-domain query into AWS&lt;/font&gt;&lt;/span&gt;" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" connectable="0" vertex="1" parent="8">
+                    <mxGeometry x="0.6046" y="-1" relative="1" as="geometry">
+                        <mxPoint x="-91" y="-3" as="offset"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="10" value="0" style="ellipse;whiteSpace=wrap;html=1;fillColor=#879196;strokeColor=none;fontColor=#FFFFFF;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+                    <mxGeometry x="1300" y="1435" width="26" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="11" value="&lt;font style=&quot;font-size: 12px;&quot;&gt;Resolve&lt;/font&gt;" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#2E73B8;rounded=0;fontSize=14;fontColor=#2E73B8;" edge="1" parent="1" source="7" target="6">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="12" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#2E73B8;rounded=0;dashed=1;fontSize=14;fontColor=#2E73B8;align=center;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="6" target="5">
+                    <mxGeometry x="0.3" relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="1918" y="1340"/>
+                            <mxPoint x="1280" y="1340"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="13" value="&lt;span style=&quot;color: rgb(46, 115, 184);&quot;&gt;&lt;font style=&quot;font-size: 12px;&quot;&gt;Returns SN-E IP&lt;/font&gt;&lt;/span&gt;" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" connectable="0" vertex="1" parent="12">
+                    <mxGeometry x="0.0436" y="-3" relative="1" as="geometry">
+                        <mxPoint as="offset"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="14" value="Ingress VPC" style="sketch=0;outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=14;fontStyle=0;container=0;pointerEvents=0;collapsible=0;recursiveResize=0;shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_vpc2;strokeColor=#9333A8;fillColor=none;verticalAlign=top;align=left;spacingLeft=30;fontColor=#9333A8;dashed=0;" vertex="1" parent="1">
+                    <mxGeometry x="1610" y="1070" width="280" height="230" as="geometry"/>
+                </mxCell>
+                <mxCell id="15" value="Service Network&#10;Endpoint (SN-E)" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#8C4FFF;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=14;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.endpoint;" vertex="1" parent="1">
+                    <mxGeometry x="1700" y="1130" width="60" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="16" value="&lt;font style=&quot;font-size: 12px;&quot;&gt;Connect to SN-E IP (DX/VPN/TGW/Peering)&lt;/font&gt;" style="endArrow=classic;html=1;strokeWidth=2.5;strokeColor=#8B0000;rounded=0;fontSize=14;fontColor=#8B0000;edgeStyle=orthogonalEdgeStyle;curved=0;" edge="1" parent="1" source="5" target="15">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="1280" y="1050"/>
+                            <mxPoint x="1730" y="1050"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="17" value="1" style="ellipse;whiteSpace=wrap;html=1;fillColor=#2E73B8;strokeColor=none;fontColor=#FFFFFF;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+                    <mxGeometry x="1384" y="1030" width="26" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="18" value="VPC Lattice&lt;i&gt;&lt;br&gt;&lt;font style=&quot;font-size: 12px;&quot;&gt;(Service Network)&lt;/font&gt;&lt;/i&gt;" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#8C4FFF;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=14;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.vpc_lattice;" vertex="1" parent="1">
+                    <mxGeometry x="1960" y="1130" width="60" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="19" value="&lt;font style=&quot;font-size: 12px;&quot;&gt;Private connectivity&lt;br&gt;over PrivateLink&lt;/font&gt;" style="endArrow=classic;html=1;strokeWidth=2.5;strokeColor=#8B0000;rounded=1;fontSize=14;fontColor=#8B0000;" edge="1" parent="1" source="15" target="18">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="20" value="2" style="ellipse;whiteSpace=wrap;html=1;fillColor=#2E73B8;strokeColor=none;fontColor=#FFFFFF;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+                    <mxGeometry x="1855" y="1120" width="26" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="21" value="Resource Gateway ENI&lt;br&gt;&lt;i&gt;&lt;font style=&quot;font-size: 12px;&quot;&gt;(Endpoint or Egress VPC)&lt;/font&gt;&lt;/i&gt;" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#8C4FFF;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=14;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.endpoint;" vertex="1" parent="1">
+                    <mxGeometry x="2220" y="1130" width="60" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="22" value="&lt;font style=&quot;font-size: 12px;&quot;&gt;Forward to RGW target&lt;/font&gt;" style="endArrow=classic;html=1;strokeWidth=2.5;strokeColor=#8B0000;rounded=1;fontSize=14;fontColor=#8B0000;" edge="1" parent="1" source="18" target="21">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="23" value="3" style="ellipse;whiteSpace=wrap;html=1;fillColor=#2E73B8;strokeColor=none;fontColor=#FFFFFF;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+                    <mxGeometry x="2115" y="1120" width="26" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="24" value="Shared resource&lt;br&gt;&lt;i&gt;&lt;font style=&quot;font-size: 12px;&quot;&gt;(VPC endpoint/proxy/app target)&lt;/font&gt;&lt;/i&gt;" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#8C4FFF;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=14;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.endpoint;" vertex="1" parent="1">
+                    <mxGeometry x="2460" y="1130" width="60" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="25" value="&lt;font style=&quot;font-size: 12px;&quot;&gt;Resource&lt;/font&gt;" style="endArrow=classic;html=1;strokeWidth=2.5;strokeColor=#8B0000;rounded=1;fontSize=14;fontColor=#8B0000;" edge="1" parent="1" source="21" target="24">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="26" value="4" style="ellipse;whiteSpace=wrap;html=1;fillColor=#2E73B8;strokeColor=none;fontColor=#FFFFFF;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+                    <mxGeometry x="2375" y="1120" width="26" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="27" value="&lt;font style=&quot;font-size: 12px;&quot;&gt;Steps&lt;br&gt;(0) DNS: the consumer resolves a custom domain. Because an SN-E creates no automatic Private Hosted Zone, you author a CNAME (or Alias) record in a Route 53 private hosted zone in the Network account, mapping the custom domain to the SN-E generated DNS name; at scale this is automated via EventBridge + Step Functions + Route 53. External / on-premises resolvers reach that record by forwarding the query into AWS through a Route 53 Resolver inbound endpoint; the record returns the SN-E IP.&lt;br&gt;(1) The consumer connects to the SN-E IP over its existing path to AWS (Direct Connect, Site-to-Site VPN, VPC peering, Transit Gateway, or Cloud WAN). A single SN-E reaches all services and resources associated to its service network.&lt;br&gt;(2) The SN-E carries the connection privately over PrivateLink into the Service Network. The Service Network IAM auth policy is still evaluated, so cross-environment isolation holds for SN-E consumers exactly as for SN-A.&lt;br&gt;(3) The Service Network forwards the raw TCP flow to the Resource Gateway for the target Resource Configuration.&lt;br&gt;(4) The Resource Gateway forwards to the shared resource (an interface VPC endpoint, the egress proxy, or an application target). The response returns along the same path.&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FBFBFB;strokeColor=#879196;align=left;verticalAlign=top;spacingLeft=12;spacingTop=10;fontSize=14;fontColor=#232F3E;" vertex="1" parent="1">
+                    <mxGeometry x="1200" y="1520" width="1400" height="140" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+</mxfile>

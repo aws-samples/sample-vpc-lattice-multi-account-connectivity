@@ -1,0 +1,55 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Associates a workload VPC with its RAM-shared VPC Lattice Service Network,
+  with private DNS enabled for all domains. Designed for deployment as a
+  service-managed CloudFormation StackSet targeting a workload OU, so every
+  current and future account in the OU is associated automatically.
+
+  No Lambda / custom resource is used: the workload VPC ID is resolved natively
+  from an SSM parameter, and the service network ID (identical for every account
+  in the OU because it is a single RAM-shared resource) is passed as a parameter.
+
+Parameters:
+  WorkloadVpcId:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /apg-lattice/workload/dev-vpc/id
+    Description: >
+      SSM parameter path that holds the workload VPC ID in each target account.
+      CloudFormation resolves this to the VPC ID at deploy time (no Lambda).
+
+  ServiceNetworkId:
+    Type: String
+    AllowedPattern: '^sn-[0-9a-z]{17}$'
+    Description: >
+      The RAM-shared VPC Lattice Service Network ID for this environment
+      (e.g. the dev service network). The same ID is valid in every account
+      in the target OU.
+
+  ServiceNetworkName:
+    Type: String
+    Default: sn-dev-shared
+    Description: Service network name, used only for the association Name tag.
+
+Resources:
+  VpcAssociation:
+    Type: AWS::VpcLattice::ServiceNetworkVpcAssociation
+    Properties:
+      ServiceNetworkIdentifier: !Ref ServiceNetworkId
+      VpcIdentifier: !Ref WorkloadVpcId
+      PrivateDnsEnabled: true
+      DnsOptions:
+        PrivateDnsPreference: ALL_DOMAINS
+      Tags:
+        - Key: Name
+          Value: !Sub 'lattice-vpc-assoc-${ServiceNetworkName}'
+
+Outputs:
+  VpcAssociationId:
+    Description: VPC Lattice Service Network VPC Association ID
+    Value: !GetAtt VpcAssociation.Id
+  ResolvedVpcId:
+    Description: Workload VPC ID resolved from SSM
+    Value: !Ref WorkloadVpcId
+  ServiceNetworkId:
+    Description: Service Network ID the VPC was associated with
+    Value: !Ref ServiceNetworkId
