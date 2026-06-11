@@ -1,5 +1,11 @@
 # Multi-Account AWS Connectivity with VPC Lattice as the Sole Network Fabric
 
+> **Disclaimer**: This repository provides reference Infrastructure-as-Code and
+> prescriptive guidance for educational purposes. It is NOT intended for production
+> deployment without additional security hardening, testing, and review against your
+> own organization's requirements. See [Security Findings](docs/13-security-findings.md)
+> for the threat model, residual risks, and production-hardening recommendations.
+
 Infrastructure-as-Code templates and a companion prescriptive guide
 for deploying Amazon VPC Lattice as the **sole** network connectivity
 fabric in a multi-account AWS environment. The repository pairs a 15-section

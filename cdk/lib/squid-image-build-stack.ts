@@ -26,7 +26,7 @@ export interface SquidImageBuildStackProps extends cdk.StackProps {
  * reproducible from this repository with no external Git connection.
  *
  * The custom image bakes in the FQDN allowlist (squid.conf:
- * `acl whitelist dstdomain "/etc/squid/allowlist.txt"` + `http_access deny all`),
+ * `acl allowlist dstdomain "/etc/squid/allowlist.txt"` + `http_access deny all`),
  * which the stock ubuntu/squid image does not enforce.
  */
 export class SquidImageBuildStack extends cdk.Stack {
