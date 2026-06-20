@@ -53,7 +53,6 @@ export class WorkloadFoundationStack extends cdk.Stack {
     ];
 
     const vpcSsmPath = props.vpcSsmPath ?? '/netfabric/workload/dev-vpc/id';
-    const ssmPrefix = props.ssmPrefix ?? '/netfabric';
     const vpcCidr = props.vpcCidr ?? '10.7.0.0/16';
     const vpcName = props.vpcName ?? 'workload-vpc';
 
