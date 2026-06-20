@@ -28,7 +28,7 @@ jobs:
       - name: TypeScript build
         run: npm run build
       - name: CDK synth
-        run: npx cdk synth --all
+        run: npx cdk synth
         env:
           # Placeholder context so synthesis runs without real account values.
           CDK_DEFAULT_ACCOUNT: '111111111111'

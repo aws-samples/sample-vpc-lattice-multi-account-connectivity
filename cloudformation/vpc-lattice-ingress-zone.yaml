@@ -1,0 +1,53 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Phase 5 ingress hosted zone (Network account). Creates the Route 53 private
+  hosted zone that holds the custom-domain CNAME records for resources exposed
+  through the Service Network VPC Endpoint (SN-E), associated to the Ingress VPC
+  so the inbound Route 53 Resolver endpoint can answer external and on-premises
+  queries. The zone ID is published to SSM so the ingress DNS automation can
+  resolve it without manual wiring.
+
+Parameters:
+  ZoneName:
+    Type: String
+    Default: ingress.internal
+    AllowedPattern: '^[a-z0-9.-]+$'
+    Description: Private hosted zone name for ingress custom domains.
+
+  IngressVpcId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::VPC::Id>
+    Default: /netfabric/network/ingress-vpc/id
+    Description: SSM path resolving to the Ingress VPC ID (published by network-foundation.yaml).
+
+  SsmPrefix:
+    Type: String
+    Default: /netfabric
+    AllowedPattern: '^/[a-zA-Z0-9/_.-]+[^/]$'
+    Description: SSM namespace under which the zone ID is published.
+
+Resources:
+  IngressZone:
+    Type: AWS::Route53::HostedZone
+    Properties:
+      Name: !Ref ZoneName
+      HostedZoneConfig:
+        Comment: netfabric ingress custom-domain zone
+      VPCs:
+        - VPCId: !Ref IngressVpcId
+          VPCRegion: !Ref AWS::Region
+
+  IngressZoneIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub ${SsmPrefix}/ingress/hosted-zone-id
+      Type: String
+      Value: !Ref IngressZone
+      Description: Route 53 private hosted zone ID for ingress custom domains
+
+Outputs:
+  IngressHostedZoneId:
+    Description: Ingress private hosted zone ID
+    Value: !Ref IngressZone
+  IngressZoneName:
+    Description: Ingress private hosted zone name
+    Value: !Ref ZoneName

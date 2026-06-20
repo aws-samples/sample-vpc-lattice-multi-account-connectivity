@@ -8,19 +8,19 @@ Description: >
 Parameters:
   EndpointVpcId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::VPC::Id>
-    Default: /apg-lattice/network/endpoint-vpc/id
+    Default: /netfabric/network/endpoint-vpc/id
     Description: SSM parameter path for the Endpoint VPC ID
   EndpointSubnetAId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Subnet::Id>
-    Default: /apg-lattice/network/endpoint-vpc/subnet/a/id
+    Default: /netfabric/network/endpoint-vpc/subnet/a/id
     Description: SSM parameter path for the Endpoint VPC subnet A ID
   EndpointSubnetBId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Subnet::Id>
-    Default: /apg-lattice/network/endpoint-vpc/subnet/b/id
+    Default: /netfabric/network/endpoint-vpc/subnet/b/id
     Description: SSM parameter path for the Endpoint VPC subnet B ID
   EndpointSecurityGroupId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::SecurityGroup::Id>
-    Default: /apg-lattice/network/endpoint-vpc/sg/rg/id
+    Default: /netfabric/network/endpoint-vpc/sg/rg/id
     Description: SSM parameter path for the Resource Gateway security group ID
   OrgId:
     Type: String
@@ -34,12 +34,12 @@ Parameters:
       Org path for the Dev OU, e.g.
       o-EXAMPLE12345/r-EXAM/ou-EXAMPLE-dev0000.
       Used in IAM auth policy aws:PrincipalOrgPaths conditions.
-  StageOuArn:
+  TestOuArn:
     Type: String
-    Description: ARN of the Stage OU
-  StageOuPath:
+    Description: ARN of the Test OU
+  TestOuPath:
     Type: String
-    Description: Org path for the Stage OU
+    Description: Org path for the Test OU
   ProdOuArn:
     Type: String
     Description: ARN of the Prod OU
@@ -55,7 +55,7 @@ Resources:
   LogsKmsKey:
     Type: AWS::KMS::Key
     Properties:
-      Description: CMK for APG Lattice service-network access log groups
+      Description: CMK for Network fabric service-network access log groups
       EnableKeyRotation: true
       KeyPolicy:
         Version: '2012-10-17'
@@ -192,7 +192,7 @@ Resources:
       EndpointList: ssm,ssmmessages,ec2messages,sts,ecr.api,ecr.dkr,logs,ecs,ecs-agent,ecs-telemetry,execute-api
 
   # ============================================================
-  # Service Networks — one per environment
+  # Service Networks: one per environment
   # ============================================================
   DevServiceNetwork:
     Type: AWS::VpcLattice::ServiceNetwork
@@ -204,6 +204,8 @@ Resources:
           Value: sn-dev-shared
         - Key: Environment
           Value: dev
+        - Key: Description
+          Value: 'Shared VPC Lattice service network for the dev environment: AWS service endpoint access and centralized egress for dev OU workload VPCs.'
 
   DevServiceNetworkAuthPolicy:
     Type: AWS::VpcLattice::AuthPolicy
@@ -222,21 +224,23 @@ Resources:
                 aws:PrincipalOrgPaths:
                   - !Sub '${DevOuPath}/*'
 
-  StageServiceNetwork:
+  TestServiceNetwork:
     Type: AWS::VpcLattice::ServiceNetwork
     Properties:
-      Name: sn-stage-shared
+      Name: sn-test-shared
       AuthType: AWS_IAM
       Tags:
         - Key: Name
-          Value: sn-stage-shared
+          Value: sn-test-shared
         - Key: Environment
-          Value: stage
+          Value: test
+        - Key: Description
+          Value: 'Shared VPC Lattice service network for the test environment: AWS service endpoint access and centralized egress for test OU workload VPCs.'
 
-  StageServiceNetworkAuthPolicy:
+  TestServiceNetworkAuthPolicy:
     Type: AWS::VpcLattice::AuthPolicy
     Properties:
-      ResourceIdentifier: !Ref StageServiceNetwork
+      ResourceIdentifier: !Ref TestServiceNetwork
       Policy:
         Statement:
           - Effect: Allow
@@ -248,7 +252,7 @@ Resources:
                 aws:PrincipalOrgID: !Ref OrgId
               ForAnyValue:StringLike:
                 aws:PrincipalOrgPaths:
-                  - !Sub '${StageOuPath}/*'
+                  - !Sub '${TestOuPath}/*'
 
   ProdServiceNetwork:
     Type: AWS::VpcLattice::ServiceNetwork
@@ -260,6 +264,8 @@ Resources:
           Value: sn-prod-shared
         - Key: Environment
           Value: prod
+        - Key: Description
+          Value: 'Shared VPC Lattice service network for the prod environment: AWS service endpoint access and centralized egress for prod OU workload VPCs.'
 
   ProdServiceNetworkAuthPolicy:
     Type: AWS::VpcLattice::AuthPolicy
@@ -315,35 +321,35 @@ Resources:
       DestinationArn: !GetAtt DevResourceAccessLogGroup.Arn
       ServiceNetworkLogType: RESOURCE
 
-  StageServiceAccessLogGroup:
+  TestServiceAccessLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: /lattice/stage/service-access-logs
+      LogGroupName: /lattice/test/service-access-logs
       RetentionInDays: 30
       KmsKeyId: !GetAtt LogsKmsKey.Arn
       Tags:
         - Key: Environment
-          Value: stage
-  StageResourceAccessLogGroup:
+          Value: test
+  TestResourceAccessLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: /lattice/stage/resource-access-logs
+      LogGroupName: /lattice/test/resource-access-logs
       RetentionInDays: 30
       KmsKeyId: !GetAtt LogsKmsKey.Arn
       Tags:
         - Key: Environment
-          Value: stage
-  StageServiceAccessLogSubscription:
+          Value: test
+  TestServiceAccessLogSubscription:
     Type: AWS::VpcLattice::AccessLogSubscription
     Properties:
-      ResourceIdentifier: !Ref StageServiceNetwork
-      DestinationArn: !GetAtt StageServiceAccessLogGroup.Arn
+      ResourceIdentifier: !Ref TestServiceNetwork
+      DestinationArn: !GetAtt TestServiceAccessLogGroup.Arn
       ServiceNetworkLogType: SERVICE
-  StageResourceAccessLogSubscription:
+  TestResourceAccessLogSubscription:
     Type: AWS::VpcLattice::AccessLogSubscription
     Properties:
-      ResourceIdentifier: !Ref StageServiceNetwork
-      DestinationArn: !GetAtt StageResourceAccessLogGroup.Arn
+      ResourceIdentifier: !Ref TestServiceNetwork
+      DestinationArn: !GetAtt TestResourceAccessLogGroup.Arn
       ServiceNetworkLogType: RESOURCE
 
   ProdServiceAccessLogGroup:
@@ -395,7 +401,7 @@ Resources:
         - Key: Name
           Value: endpoint-resource-gw
 
-  # Egress Resource Gateway removed — egress proxy now uses
+  # Egress Resource Gateway removed: egress proxy now uses
   # VPC Lattice Service + Target Group (standalone stack)
 
   # ============================================================
@@ -414,18 +420,18 @@ Resources:
         - Key: Name
           Value: vpc-lattice-sn-dev-share
 
-  StageRAMShare:
+  TestRAMShare:
     Type: AWS::RAM::ResourceShare
     Properties:
-      Name: vpc-lattice-sn-stage-share
+      Name: vpc-lattice-sn-test-share
       AllowExternalPrincipals: false
       ResourceArns:
-        - !Ref StageServiceNetwork
+        - !Ref TestServiceNetwork
       Principals:
-        - !Ref StageOuArn
+        - !Ref TestOuArn
       Tags:
         - Key: Name
-          Value: vpc-lattice-sn-stage-share
+          Value: vpc-lattice-sn-test-share
 
   ProdRAMShare:
     Type: AWS::RAM::ResourceShare
@@ -441,7 +447,7 @@ Resources:
           Value: vpc-lattice-sn-prod-share
 
   # ============================================================
-  # Resource Configurations — 10 endpoint RCs + 1 egress proxy RC
+  # Resource Configurations: 11 endpoint RCs (the egress proxy RC is defined in squid-egress-proxy.yaml)
   # VPCE DNS names resolved dynamically from VpceDnsLookup
   # ============================================================
 
@@ -469,15 +475,15 @@ Resources:
       ServiceNetworkId: !GetAtt DevServiceNetwork.Id
       ResourceConfigurationId: !GetAtt SsmResourceConfig.Id
       PrivateDnsEnabled: true
-  SsmSNAssocStage:
+  SsmSNAssocTest:
     DependsOn: SsmSNAssocDev
     Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
     Properties:
-      ServiceNetworkId: !GetAtt StageServiceNetwork.Id
+      ServiceNetworkId: !GetAtt TestServiceNetwork.Id
       ResourceConfigurationId: !GetAtt SsmResourceConfig.Id
       PrivateDnsEnabled: true
   SsmSNAssocProd:
-    DependsOn: SsmSNAssocStage
+    DependsOn: SsmSNAssocTest
     Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
     Properties:
       ServiceNetworkId: !GetAtt ProdServiceNetwork.Id
@@ -509,15 +515,15 @@ Resources:
       ServiceNetworkId: !GetAtt DevServiceNetwork.Id
       ResourceConfigurationId: !GetAtt SsmmessagesResourceConfig.Id
       PrivateDnsEnabled: true
-  SsmmessagesSNAssocStage:
+  SsmmessagesSNAssocTest:
     DependsOn: SsmmessagesSNAssocDev
     Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
     Properties:
-      ServiceNetworkId: !GetAtt StageServiceNetwork.Id
+      ServiceNetworkId: !GetAtt TestServiceNetwork.Id
       ResourceConfigurationId: !GetAtt SsmmessagesResourceConfig.Id
       PrivateDnsEnabled: true
   SsmmessagesSNAssocProd:
-    DependsOn: SsmmessagesSNAssocStage
+    DependsOn: SsmmessagesSNAssocTest
     Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
     Properties:
       ServiceNetworkId: !GetAtt ProdServiceNetwork.Id
@@ -549,15 +555,15 @@ Resources:
       ServiceNetworkId: !GetAtt DevServiceNetwork.Id
       ResourceConfigurationId: !GetAtt Ec2messagesResourceConfig.Id
       PrivateDnsEnabled: true
-  Ec2messagesSNAssocStage:
+  Ec2messagesSNAssocTest:
     DependsOn: Ec2messagesSNAssocDev
     Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
     Properties:
-      ServiceNetworkId: !GetAtt StageServiceNetwork.Id
+      ServiceNetworkId: !GetAtt TestServiceNetwork.Id
       ResourceConfigurationId: !GetAtt Ec2messagesResourceConfig.Id
       PrivateDnsEnabled: true
   Ec2messagesSNAssocProd:
-    DependsOn: Ec2messagesSNAssocStage
+    DependsOn: Ec2messagesSNAssocTest
     Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
     Properties:
       ServiceNetworkId: !GetAtt ProdServiceNetwork.Id
@@ -589,15 +595,15 @@ Resources:
       ServiceNetworkId: !GetAtt DevServiceNetwork.Id
       ResourceConfigurationId: !GetAtt StsResourceConfig.Id
       PrivateDnsEnabled: true
-  StsSNAssocStage:
+  StsSNAssocTest:
     DependsOn: StsSNAssocDev
     Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
     Properties:
-      ServiceNetworkId: !GetAtt StageServiceNetwork.Id
+      ServiceNetworkId: !GetAtt TestServiceNetwork.Id
       ResourceConfigurationId: !GetAtt StsResourceConfig.Id
       PrivateDnsEnabled: true
   StsSNAssocProd:
-    DependsOn: StsSNAssocStage
+    DependsOn: StsSNAssocTest
     Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
     Properties:
       ServiceNetworkId: !GetAtt ProdServiceNetwork.Id
@@ -629,15 +635,15 @@ Resources:
       ServiceNetworkId: !GetAtt DevServiceNetwork.Id
       ResourceConfigurationId: !GetAtt EcrApiResourceConfig.Id
       PrivateDnsEnabled: true
-  EcrApiSNAssocStage:
+  EcrApiSNAssocTest:
     DependsOn: EcrApiSNAssocDev
     Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
     Properties:
-      ServiceNetworkId: !GetAtt StageServiceNetwork.Id
+      ServiceNetworkId: !GetAtt TestServiceNetwork.Id
       ResourceConfigurationId: !GetAtt EcrApiResourceConfig.Id
       PrivateDnsEnabled: true
   EcrApiSNAssocProd:
-    DependsOn: EcrApiSNAssocStage
+    DependsOn: EcrApiSNAssocTest
     Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
     Properties:
       ServiceNetworkId: !GetAtt ProdServiceNetwork.Id
@@ -669,15 +675,15 @@ Resources:
       ServiceNetworkId: !GetAtt DevServiceNetwork.Id
       ResourceConfigurationId: !GetAtt EcrDkrResourceConfig.Id
       PrivateDnsEnabled: true
-  EcrDkrSNAssocStage:
+  EcrDkrSNAssocTest:
     DependsOn: EcrDkrSNAssocDev
     Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
     Properties:
-      ServiceNetworkId: !GetAtt StageServiceNetwork.Id
+      ServiceNetworkId: !GetAtt TestServiceNetwork.Id
       ResourceConfigurationId: !GetAtt EcrDkrResourceConfig.Id
       PrivateDnsEnabled: true
   EcrDkrSNAssocProd:
-    DependsOn: EcrDkrSNAssocStage
+    DependsOn: EcrDkrSNAssocTest
     Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
     Properties:
       ServiceNetworkId: !GetAtt ProdServiceNetwork.Id
@@ -709,15 +715,15 @@ Resources:
       ServiceNetworkId: !GetAtt DevServiceNetwork.Id
       ResourceConfigurationId: !GetAtt LogsResourceConfig.Id
       PrivateDnsEnabled: true
-  LogsSNAssocStage:
+  LogsSNAssocTest:
     DependsOn: LogsSNAssocDev
     Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
     Properties:
-      ServiceNetworkId: !GetAtt StageServiceNetwork.Id
+      ServiceNetworkId: !GetAtt TestServiceNetwork.Id
       ResourceConfigurationId: !GetAtt LogsResourceConfig.Id
       PrivateDnsEnabled: true
   LogsSNAssocProd:
-    DependsOn: LogsSNAssocStage
+    DependsOn: LogsSNAssocTest
     Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
     Properties:
       ServiceNetworkId: !GetAtt ProdServiceNetwork.Id
@@ -749,15 +755,15 @@ Resources:
       ServiceNetworkId: !GetAtt DevServiceNetwork.Id
       ResourceConfigurationId: !GetAtt EcsResourceConfig.Id
       PrivateDnsEnabled: true
-  EcsSNAssocStage:
+  EcsSNAssocTest:
     DependsOn: EcsSNAssocDev
     Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
     Properties:
-      ServiceNetworkId: !GetAtt StageServiceNetwork.Id
+      ServiceNetworkId: !GetAtt TestServiceNetwork.Id
       ResourceConfigurationId: !GetAtt EcsResourceConfig.Id
       PrivateDnsEnabled: true
   EcsSNAssocProd:
-    DependsOn: EcsSNAssocStage
+    DependsOn: EcsSNAssocTest
     Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
     Properties:
       ServiceNetworkId: !GetAtt ProdServiceNetwork.Id
@@ -789,15 +795,15 @@ Resources:
       ServiceNetworkId: !GetAtt DevServiceNetwork.Id
       ResourceConfigurationId: !GetAtt EcsAgentResourceConfig.Id
       PrivateDnsEnabled: true
-  EcsAgentSNAssocStage:
+  EcsAgentSNAssocTest:
     DependsOn: EcsAgentSNAssocDev
     Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
     Properties:
-      ServiceNetworkId: !GetAtt StageServiceNetwork.Id
+      ServiceNetworkId: !GetAtt TestServiceNetwork.Id
       ResourceConfigurationId: !GetAtt EcsAgentResourceConfig.Id
       PrivateDnsEnabled: true
   EcsAgentSNAssocProd:
-    DependsOn: EcsAgentSNAssocStage
+    DependsOn: EcsAgentSNAssocTest
     Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
     Properties:
       ServiceNetworkId: !GetAtt ProdServiceNetwork.Id
@@ -829,15 +835,15 @@ Resources:
       ServiceNetworkId: !GetAtt DevServiceNetwork.Id
       ResourceConfigurationId: !GetAtt EcsTelemetryResourceConfig.Id
       PrivateDnsEnabled: true
-  EcsTelemetrySNAssocStage:
+  EcsTelemetrySNAssocTest:
     DependsOn: EcsTelemetrySNAssocDev
     Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
     Properties:
-      ServiceNetworkId: !GetAtt StageServiceNetwork.Id
+      ServiceNetworkId: !GetAtt TestServiceNetwork.Id
       ResourceConfigurationId: !GetAtt EcsTelemetryResourceConfig.Id
       PrivateDnsEnabled: true
   EcsTelemetrySNAssocProd:
-    DependsOn: EcsTelemetrySNAssocStage
+    DependsOn: EcsTelemetrySNAssocTest
     Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
     Properties:
       ServiceNetworkId: !GetAtt ProdServiceNetwork.Id
@@ -869,15 +875,15 @@ Resources:
       ServiceNetworkId: !GetAtt DevServiceNetwork.Id
       ResourceConfigurationId: !GetAtt ExecuteApiResourceConfig.Id
       PrivateDnsEnabled: true
-  ExecuteApiSNAssocStage:
+  ExecuteApiSNAssocTest:
     DependsOn: ExecuteApiSNAssocDev
     Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
     Properties:
-      ServiceNetworkId: !GetAtt StageServiceNetwork.Id
+      ServiceNetworkId: !GetAtt TestServiceNetwork.Id
       ResourceConfigurationId: !GetAtt ExecuteApiResourceConfig.Id
       PrivateDnsEnabled: true
   ExecuteApiSNAssocProd:
-    DependsOn: ExecuteApiSNAssocStage
+    DependsOn: ExecuteApiSNAssocTest
     Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
     Properties:
       ServiceNetworkId: !GetAtt ProdServiceNetwork.Id
@@ -891,12 +897,12 @@ Outputs:
   DevServiceNetworkArn:
     Description: Dev Service Network ARN
     Value: !Ref DevServiceNetwork
-  StageServiceNetworkId:
-    Description: Stage Service Network ID
-    Value: !GetAtt StageServiceNetwork.Id
-  StageServiceNetworkArn:
-    Description: Stage Service Network ARN
-    Value: !Ref StageServiceNetwork
+  TestServiceNetworkId:
+    Description: Test Service Network ID
+    Value: !GetAtt TestServiceNetwork.Id
+  TestServiceNetworkArn:
+    Description: Test Service Network ARN
+    Value: !Ref TestServiceNetwork
   ProdServiceNetworkId:
     Description: Prod Service Network ID
     Value: !GetAtt ProdServiceNetwork.Id

@@ -10,7 +10,7 @@ Infrastructure-as-Code templates and a companion prescriptive guide
 for deploying Amazon VPC Lattice as the **sole** network connectivity
 fabric in a multi-account AWS environment. The repository pairs a 15-section
 written guide (in `docs/`) with two reference implementations (AWS CDK
-in TypeScript and AWS CloudFormation), plus rendered architecture diagrams
+in TypeScript and AWS CloudFormation), along with rendered architecture diagrams
 and a security review.
 
 ## Overview
@@ -44,12 +44,12 @@ in order; each one links to the next.
 | 09 | [Best Practices](docs/09-best-practices.md) | Naming, tagging, monitoring, and quota planning to keep the fabric runnable at scale. |
 | 10 | [Well-Architected Alignment](docs/10-well-architected.md) | The pattern mapped to the six Well-Architected pillars, with explicit trade-offs. |
 | 11 | [Cost and Operational Comparison](docs/11-cost-comparison.md) | Side-by-side cost and operational comparison against a TGW + NAT + per-account-endpoints baseline. |
-| 12 | [Troubleshooting and FAQ](docs/12-troubleshooting-faq.md) | Symptom-to-diagnostic playbooks for the common failure modes plus frequently asked questions. |
+| 12 | [Troubleshooting and FAQ](docs/12-troubleshooting-faq.md) | Symptom-to-diagnostic playbooks for the common failure modes and frequently asked questions. |
 | 13 | [Security Findings Summary](docs/13-security-findings.md) | The STRIDE threat model, its mitigations, and the security posture of the reference implementation. |
-| 14 | [Next Steps and Resources](docs/14-next-steps.md) | What to evaluate after the reference implementation is in place, plus links to deeper material. |
+| 14 | [Next Steps and Resources](docs/14-next-steps.md) | What to evaluate after the reference implementation is in place, along with links to deeper material. |
 
 The architecture diagrams referenced from the guide are in
-[`diagrams/`](diagrams/) (draw.io source plus rendered PNG and SVG): the
+[`diagrams/`](diagrams/) (draw.io source with rendered PNG and SVG): the
 high-level topology (Figure 1, which shows all three in-scope patterns, shared endpoints, centralized egress, and SN-E ingress, on one fabric), and
 the endpoint, egress, and ingress data-flow diagrams (Figures 2, 3, and 4).
 The threat model that backs section 13 is summarized inline in
@@ -59,7 +59,7 @@ The threat model that backs section 13 is summarized inline in
 
 ```
 .
-├── docs/                                       APG guide (15 sections, 00-14)
+├── docs/                                       Implementation guide (15 sections, 00-14)
 │
 ├── diagrams/                                   Architecture diagrams
 │   ├── 01-high-level-topology.{drawio,png,svg}
@@ -69,23 +69,35 @@ The threat model that backs section 13 is summarized inline in
 │   └── README.md
 │
 ├── cloudformation/                             CloudFormation templates (YAML)
-│   ├── network-foundation.yaml                 Endpoint + Egress VPCs + 11 interface VPCEs (Network account)
+│   ├── network-foundation.yaml                 Endpoint + Egress + Ingress VPCs + interface VPCEs (Network account)
 │   ├── workload-foundation.yaml                Workload VPC + SSM contract (Workload account)
-│   ├── vpc-lattice-resource-gateways.yaml      Service networks + 11 endpoint RCs + RAM
+│   ├── vpc-lattice-resource-gateways.yaml      Service networks + endpoint RCs + RAM
+│   ├── squid-image-build.yaml                  CodeBuild + ECR for the Squid image (Network account)
 │   ├── squid-egress-proxy.yaml                 Fargate Squid + NLB + egress RC
-│   └── vpc-lattice-workload-vpc-association.yaml  Workload VPC association (StackSet)
+│   ├── vpc-lattice-workload-vpc-association.yaml  Workload VPC association (StackSet)
+│   ├── vpc-lattice-ingress-sne.yaml            Phase 5 ingress: Service Network VPC Endpoint (SN-E)
+│   ├── vpc-lattice-ingress-zone.yaml           Phase 5 ingress: Route 53 private hosted zone
+│   ├── vpc-lattice-ingress-dns-automation.yaml Phase 5 ingress: EventBridge to Step Functions to Route 53 (Lambda-free), with optional cross-account bus
+│   ├── workload-app.yaml                        Phase 5 ingress producer: workload app + Resource Gateway + RC (Workload account)
+│   └── workload-ingress-dns-forwarder.yaml      Phase 5 ingress: workload-account event forwarder to the Network DNS bus
 │
 ├── cdk/                                        CDK TypeScript project
-│   ├── bin/app.ts                              Entry point (8 stacks)
+│   ├── bin/app.ts                              Entry point (14 stacks)
 │   ├── lib/
-│   │   ├── network-foundation-stack.ts         Endpoint + Egress VPCs (Network account)
+│   │   ├── network-foundation-stack.ts         Endpoint + Egress + Ingress VPCs (Network account)
 │   │   ├── workload-foundation-stack.ts        Workload VPC (Workload account)
 │   │   ├── vpc-lattice-core-stack.ts           Service networks + RAM shares
-│   │   ├── vpc-lattice-endpoints-stack.ts      Resource Gateway + 10 endpoint RCs
+│   │   ├── vpc-lattice-endpoints-stack.ts      Resource Gateway + endpoint RCs
 │   │   ├── squid-image-build-stack.ts          CodeBuild + ECR for the Squid image
 │   │   ├── squid-egress-stack.ts               Fargate Squid + NLB + egress RC
 │   │   ├── workload-association-stackset-stack.ts  Service-managed StackSet (org-wide assoc)
-│   │   └── workload-validator-stack.ts         Throwaway SSM-managed validator EC2
+│   │   ├── workload-validator-stack.ts         Throwaway SSM-managed validator EC2 (Workload account)
+│   │   ├── vpc-lattice-ingress-stack.ts        Phase 5 ingress: Service Network VPC Endpoint (SN-E)
+│   │   ├── vpc-lattice-ingress-zone-stack.ts   Phase 5 ingress: Route 53 private hosted zone
+│   │   ├── vpc-lattice-ingress-dns-stack.ts    Phase 5 ingress: Lambda-free DNS automation (+ cross-account bus)
+│   │   ├── workload-app-stack.ts               Phase 5 ingress producer: workload app + Resource Gateway + RC
+│   │   ├── workload-ingress-dns-forwarder-stack.ts  Phase 5 ingress: workload-account event forwarder
+│   │   └── ingress-consumer-validator-stack.ts Throwaway consumer validator EC2 in the Ingress VPC
 │   ├── squid/                                  Custom Squid image (Dockerfile, allowlist, conf)
 │   ├── cdk.json                                Context (placeholder identifiers; see below)
 │   └── README.md                               CDK-specific instructions
@@ -111,12 +123,12 @@ deploying.
 
 ### Option A: CDK (recommended)
 
-The CDK app in `cdk/bin/app.ts` defines eight stacks. Deploy in this order:
+The CDK app in `cdk/bin/app.ts` defines 14 stacks (eight for Phases 1-4, plus optional Phase 5 ingress stacks and throwaway validators). Deploy in this order:
 
 ```bash
 cd cdk
 npm install
-npx cdk synth                                  # validates all 8 stacks
+npx cdk synth                                  # validates all stacks
 
 # 1. Foundation (only if you don't already have an Endpoint/Egress/Workload VPC)
 npx cdk deploy NetworkFoundationStack          # Network account
@@ -126,62 +138,181 @@ npx cdk deploy WorkloadFoundationStack         # Workload account
 npx cdk deploy VpcLatticeCoreStack             # Network account
 npx cdk deploy VpcLatticeEndpointsStack        # Network account
 
-# 3. Centralized Squid egress (image build first, then the Fargate service)
-npx cdk deploy SquidImageBuildStack            # Network account, builds and pushes the image
+# 3. Centralized Squid egress.
+#    3a. Create the CodeBuild project and ECR repo (this stack does NOT build
+#        the image; SquidEgressStack has no image to run until you build it).
+npx cdk deploy SquidImageBuildStack            # Network account
+#    3b. Build and push the Squid image, then WAIT for the build to succeed
+#        before deploying SquidEgressStack (the Fargate tasks have no image to
+#        run until the build finishes). The project name is the SquidImageBuildStack
+#        CodeBuildProjectName output (it is <resourcePrefix>-squid-proxy-build):
+PROJECT=$(aws cloudformation describe-stacks --stack-name SquidImageBuildStack \
+  --query "Stacks[0].Outputs[?OutputKey=='CodeBuildProjectName'].OutputValue" --output text)
+BID=$(aws codebuild start-build --project-name "$PROJECT" --query 'build.id' --output text)
+echo "BUILD_ID=$BID"
+# Poll until the build reaches a terminal state (about 2-5 minutes).
+while true; do
+  STATUS=$(aws codebuild batch-get-builds --ids "$BID" --query 'builds[0].buildStatus' --output text)
+  echo "build status: $STATUS"
+  case "$STATUS" in
+    SUCCEEDED) echo "image built and pushed"; break ;;
+    FAILED|FAULT|STOPPED|TIMED_OUT) echo "build did not succeed; check the CodeBuild logs"; break ;;
+  esac
+  sleep 15
+done
+#    3c. Deploy the Fargate service once the image is in ECR.
 npx cdk deploy SquidEgressStack                # Network account
 
-# 4. Workload onboarding, service-managed StackSet from the Management account
+# 4. Workload onboarding, service-managed StackSet from the stack Set admin account
 #    auto-associates every current and future account in the target OU.
-npx cdk deploy WorkloadAssociationStackSetStack  # Management account
+npx cdk deploy WorkloadAssociationStackSetStack  # stack Set admin account
 
 # 5. Optional: throwaway validator EC2 for in-VPC connectivity checks
 npx cdk deploy WorkloadValidatorStack          # Workload account
+
+# 6. Optional (Phase 5): ingress for external, on-premises, and cross-Region
+#    consumers, reaching a private workload app through the fabric with no
+#    internet exposure. consumer -> SN-E -> Service Network -> workload app.
+npx cdk deploy VpcLatticeIngressStackDev         # Network account (SN-E + optional inbound resolver)
+npx cdk deploy VpcLatticeIngressZoneStack        # Network account (ingress.internal private hosted zone)
+npx cdk deploy VpcLatticeIngressDnsStack         # Network account (Lambda-free DNS automation + cross-account bus)
+npx cdk deploy WorkloadAppStack                  # Workload account (private app exposed as a Resource Configuration)
+npx cdk deploy WorkloadIngressDnsForwarderStack  # Workload account (forwards RC tag changes to the Network DNS bus)
+#    Optional: a throwaway consumer in the Ingress VPC that validates the path.
+npx cdk deploy IngressConsumerValidatorStack     # Network account
 ```
 
 All configuration is passed via `cdk.json` context values. See
 [`cdk/README.md`](cdk/README.md) for the full configuration reference and
 deployment notes.
 
+> **One command:** to run the whole cross-account rollout in order (it uses the
+> right profile per account and builds the Squid image between the egress
+> stacks), use the helper script:
+> ```bash
+> cd cdk
+> NETWORK_PROFILE=net MGMT_PROFILE=mgmt WORKLOAD_PROFILE=wl ./deploy.sh
+> # Optional: ENVIRONMENT=test|prod (default dev), DEPLOY_INGRESS=true
+> ```
+> The workload-side stacks target one environment per deploy via
+> `-c environment=dev|test|prod`; see [`cdk/README.md`](cdk/README.md#multi-environment-dev--test--prod).
+
 ### Option B: CloudFormation
 
+Deploy in this order. Replace placeholder values (`o-EXAMPLE12345`,
+`pl-EXAMPLE0000000000`, `sn-EXAMPLEdev0000000`, `ou-EXAMPLE-*`,
+`111111111111`) with real values from your AWS Organization and Region.
+
 ```bash
-# 1. Service networks + endpoint Resource Configurations + RAM shares (Network account)
+# ──────────────────────────────────────────────────────────────────────
+# 1. Network Foundation (Network account)
+#    Creates Endpoint VPC, Egress VPC, Ingress VPC, interface VPC endpoints,
+#    security groups, and publishes all identifiers to SSM under /netfabric/.
+# ──────────────────────────────────────────────────────────────────────
+aws cloudformation deploy \
+  --template-file cloudformation/network-foundation.yaml \
+  --stack-name netfabric-network-foundation \
+  --capabilities CAPABILITY_IAM \
+  --parameter-overrides \
+    LatticePrefixListId=pl-EXAMPLE0000000000 \
+  --region us-east-2
+
+# ──────────────────────────────────────────────────────────────────────
+# 2. Squid Image Build (Network account)
+#    Creates ECR repo + CodeBuild project. After deploying, trigger the
+#    build and wait for it to finish before deploying the egress proxy.
+# ──────────────────────────────────────────────────────────────────────
+aws cloudformation deploy \
+  --template-file cloudformation/squid-image-build.yaml \
+  --stack-name netfabric-squid-image-build \
+  --capabilities CAPABILITY_IAM \
+  --region us-east-2
+
+# Trigger the build and wait for completion (~2-5 minutes):
+PROJECT=$(aws cloudformation describe-stacks --stack-name netfabric-squid-image-build \
+  --query "Stacks[0].Outputs[?OutputKey=='CodeBuildProjectName'].OutputValue" --output text \
+  --region us-east-2)
+BID=$(aws codebuild start-build --project-name "$PROJECT" --region us-east-2 \
+  --query 'build.id' --output text)
+echo "BUILD_ID=$BID"
+while true; do
+  STATUS=$(aws codebuild batch-get-builds --ids "$BID" --region us-east-2 \
+    --query 'builds[0].buildStatus' --output text)
+  echo "build status: $STATUS"
+  case "$STATUS" in
+    SUCCEEDED) echo "image built and pushed"; break ;;
+    FAILED|FAULT|STOPPED|TIMED_OUT) echo "build did not succeed; check CodeBuild logs"; exit 1 ;;
+  esac
+  sleep 15
+done
+
+# ──────────────────────────────────────────────────────────────────────
+# 3. Service Networks + Resource Gateways + Resource Configurations + RAM
+#    (Network account). Reads VPC/subnet/SG IDs from SSM (published by step 1).
+# ──────────────────────────────────────────────────────────────────────
 aws cloudformation deploy \
   --template-file cloudformation/vpc-lattice-resource-gateways.yaml \
-  --stack-name vpc-lattice-core \
+  --stack-name netfabric-vpc-lattice-core \
   --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
   --parameter-overrides \
     OrgId=o-EXAMPLE12345 \
     DevOuArn=arn:aws:organizations::111111111111:ou/o-EXAMPLE12345/ou-EXAMPLE-dev0000 \
     DevOuPath=o-EXAMPLE12345/r-EXAM/ou-EXAMPLE-dev0000 \
-    StageOuArn=arn:aws:organizations::111111111111:ou/o-EXAMPLE12345/ou-EXAMPLE-stage000 \
-    StageOuPath=o-EXAMPLE12345/r-EXAM/ou-EXAMPLE-stage000 \
+    TestOuArn=arn:aws:organizations::111111111111:ou/o-EXAMPLE12345/ou-EXAMPLE-test000 \
+    TestOuPath=o-EXAMPLE12345/r-EXAM/ou-EXAMPLE-test000 \
     ProdOuArn=arn:aws:organizations::111111111111:ou/o-EXAMPLE12345/ou-EXAMPLE-prod0000 \
     ProdOuPath=o-EXAMPLE12345/r-EXAM/ou-EXAMPLE-prod0000 \
   --region us-east-2
 
-# 2. Centralized Squid egress proxy (Network account, Egress VPC)
+# ──────────────────────────────────────────────────────────────────────
+# 4. Squid Egress Proxy (Network account, Egress VPC)
+#    Reads the Squid image URI from SSM (published by the CodeBuild in step 2).
+# ──────────────────────────────────────────────────────────────────────
 aws cloudformation deploy \
   --template-file cloudformation/squid-egress-proxy.yaml \
-  --stack-name squid-egress-proxy \
+  --stack-name netfabric-squid-egress-proxy \
   --capabilities CAPABILITY_IAM \
   --parameter-overrides \
     LatticePrefixListId=pl-EXAMPLE0000000000 \
     DevServiceNetworkId=sn-EXAMPLEdev0000000 \
-    StageServiceNetworkId=sn-EXAMPLEstage00000 \
+    TestServiceNetworkId=sn-EXAMPLEtest000000 \
     ProdServiceNetworkId=sn-EXAMPLEprod000000 \
-    AllowedDomains=".amazonaws.com .your-domain.com" \
+    AllowedDomains=".amazonaws.com .aws.amazon.com .amazonlinux.com" \
   --region us-east-2
 
-# 3. Workload VPC association (deploy as a service-managed StackSet targeting workload OUs)
+# ──────────────────────────────────────────────────────────────────────
+# 5. Workload Foundation (per workload account)
+#    Creates the isolated workload VPC and publishes the VPC ID to SSM.
+#    Repeat for each environment with the appropriate CIDR and SSM path.
+# ──────────────────────────────────────────────────────────────────────
+# Dev:
 aws cloudformation deploy \
-  --template-file cloudformation/vpc-lattice-workload-vpc-association.yaml \
-  --stack-name vpc-lattice-workload-assoc \
+  --template-file cloudformation/workload-foundation.yaml \
+  --stack-name netfabric-workload-foundation \
   --capabilities CAPABILITY_IAM \
   --parameter-overrides \
-    WorkloadVpcId=/apg-lattice/workload/dev-vpc/id \
+    VpcCidr=10.7.0.0/16 \
+    VpcSsmPath=/netfabric/workload/dev-vpc/id \
+  --region us-east-2
+# Stage: (in Stage account)
+#   VpcCidr=10.17.0.0/16 VpcSsmPath=/netfabric/workload/stage-vpc/id
+# Prod: (in Prod account)
+#   VpcCidr=10.27.0.0/16 VpcSsmPath=/netfabric/workload/prod-vpc/id
+
+# ──────────────────────────────────────────────────────────────────────
+# 6. Workload VPC Association (per workload account, or via StackSet)
+#    Associates the workload VPC with its RAM-shared service network.
+# ──────────────────────────────────────────────────────────────────────
+aws cloudformation deploy \
+  --template-file cloudformation/vpc-lattice-workload-vpc-association.yaml \
+  --stack-name netfabric-workload-assoc \
+  --capabilities CAPABILITY_IAM \
+  --parameter-overrides \
+    WorkloadVpcId=/netfabric/workload/dev-vpc/id \
     ServiceNetworkId=sn-EXAMPLEdev0000000 \
-    ServiceNetworkName=sn-dev-shared
+    ServiceNetworkName=sn-dev-shared \
+    LatticePrefixListId=pl-EXAMPLE0000000000 \
+  --region us-east-2
 ```
 
 `WorkloadVpcId` is an SSM parameter path that resolves to the workload
@@ -190,9 +321,71 @@ service-managed StackSet rollout work without a Lambda. See
 [Phase 4: Workload Onboarding](docs/07-phase4-workload-onboarding.md) for
 the full StackSet rollout commands.
 
+#### Optional: Phase 5 ingress (SN-E)
+
+```bash
+# ──────────────────────────────────────────────────────────────────────
+# 7. Service Network VPC Endpoint (Network account, per environment)
+#    Exposes the service network to consumers in the Ingress VPC.
+# ──────────────────────────────────────────────────────────────────────
+aws cloudformation deploy \
+  --template-file cloudformation/vpc-lattice-ingress-sne.yaml \
+  --stack-name netfabric-ingress-sne-dev \
+  --capabilities CAPABILITY_IAM \
+  --parameter-overrides \
+    ServiceNetworkArn=arn:aws:vpc-lattice:us-east-2:111111111111:servicenetwork/sn-EXAMPLEdev0000000 \
+    Environment=dev \
+    ConsumerSourceCidr=10.8.0.0/16 \
+    LatticePrefixListId=pl-EXAMPLE0000000000 \
+  --region us-east-2
+# Repeat with Environment=test and Environment=prod for the other service networks.
+
+# ──────────────────────────────────────────────────────────────────────
+# 8. Ingress hosted zone + DNS automation (Network account)
+# ──────────────────────────────────────────────────────────────────────
+aws cloudformation deploy \
+  --template-file cloudformation/vpc-lattice-ingress-zone.yaml \
+  --stack-name netfabric-ingress-zone \
+  --capabilities CAPABILITY_IAM \
+  --region us-east-2
+
+aws cloudformation deploy \
+  --template-file cloudformation/vpc-lattice-ingress-dns-automation.yaml \
+  --stack-name netfabric-ingress-dns \
+  --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+  --parameter-overrides \
+    OrgId=o-EXAMPLE12345 \
+  --region us-east-2
+
+# ──────────────────────────────────────────────────────────────────────
+# 9. Workload app + DNS forwarder (per workload account)
+#    Deploys a demo app behind an NLB, exposed as a Resource Configuration
+#    on the service network. The DNS forwarder sends tag-change events to
+#    the Network account so the automation publishes the custom domain.
+# ──────────────────────────────────────────────────────────────────────
+aws cloudformation deploy \
+  --template-file cloudformation/workload-app.yaml \
+  --stack-name netfabric-workload-app \
+  --capabilities CAPABILITY_IAM \
+  --parameter-overrides \
+    ServiceNetworkId=sn-EXAMPLEdev0000000 \
+    LatticePrefixListId=pl-EXAMPLE0000000000 \
+    WorkloadVpcCidr=10.7.0.0/16 \
+    CustomDomainName=app.ingress.internal \
+  --region us-east-2
+
+aws cloudformation deploy \
+  --template-file cloudformation/workload-ingress-dns-forwarder.yaml \
+  --stack-name netfabric-ingress-dns-forwarder \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --parameter-overrides \
+    NetworkAccountId=111111111111 \
+  --region us-east-2
+```
+
 ## Architecture
 
-Three shared service networks (one per environment: dev, stage, prod) are
+Three shared service networks (one per environment: dev, test, prod) are
 deployed in a central Network account and shared to workload OUs via
 AWS Resource Access Manager (RAM). Each workload VPC associates with its
 environment's service network and automatically inherits:
@@ -258,4 +451,3 @@ This project is licensed under the MIT-0 License. See the [LICENSE](LICENSE) fil
 
 - [AWS Prescriptive Guidance: Network connectivity for multi-account architectures](https://docs.aws.amazon.com/prescriptive-guidance/latest/transitioning-to-multiple-aws-accounts/network-connectivity.html)
 - [Amazon VPC Lattice Documentation](https://docs.aws.amazon.com/vpc-lattice/)
-- [AWS re:Invent 2025: Advanced VPC Design and New Capabilities (NET340)](https://www.youtube.com/watch?v=40QfxdvDGsw)

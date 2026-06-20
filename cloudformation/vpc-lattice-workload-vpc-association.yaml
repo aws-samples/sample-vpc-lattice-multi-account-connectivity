@@ -5,14 +5,17 @@ Description: >
   service-managed CloudFormation StackSet targeting a workload OU, so every
   current and future account in the OU is associated automatically.
 
-  No Lambda / custom resource is used: the workload VPC ID is resolved natively
-  from an SSM parameter, and the service network ID (identical for every account
-  in the OU because it is a single RAM-shared resource) is passed as a parameter.
+  No Lambda or custom resource is involved: the workload VPC ID is resolved
+  natively from an SSM parameter, and the service network ID (identical for
+  every account in the OU because it is a single RAM-shared resource) is passed
+  as a parameter. The template also creates a workload security group that
+  permits egress to the VPC Lattice managed prefix list, so traffic to the
+  shared endpoints (443) and the egress proxy (3128) is not dropped.
 
 Parameters:
   WorkloadVpcId:
-    Type: AWS::SSM::Parameter::Value<String>
-    Default: /apg-lattice/workload/dev-vpc/id
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::VPC::Id>
+    Default: /netfabric/workload/dev-vpc/id
     Description: >
       SSM parameter path that holds the workload VPC ID in each target account.
       CloudFormation resolves this to the VPC ID at deploy time (no Lambda).
@@ -30,7 +33,40 @@ Parameters:
     Default: sn-dev-shared
     Description: Service network name, used only for the association Name tag.
 
+  LatticePrefixListId:
+    Type: String
+    AllowedPattern: '^pl-[a-z0-9]+$'
+    Description: >
+      VPC Lattice managed prefix list ID for this Region
+      (com.amazonaws.<region>.vpc-lattice). The workload security group allows
+      egress to this prefix list on 443 and 3128.
+
 Resources:
+  # Workload security group: allows the workload VPC to send traffic INTO the
+  # VPC Lattice data plane (the managed prefix list) on 443 (shared endpoints)
+  # and 3128 (egress proxy). Without this egress, traffic to Lattice-managed IPs
+  # is dropped and connections time out. Attach it to workload ENIs that use the
+  # fabric. Mirrors the CDK WorkloadAssociationStackSetStack template.
+  WorkloadLatticeSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub 'Lattice workload access - ${AWS::StackName}'
+      VpcId: !Ref WorkloadVpcId
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          DestinationPrefixListId: !Ref LatticePrefixListId
+          Description: HTTPS to VPC Lattice (shared endpoints)
+        - IpProtocol: tcp
+          FromPort: 3128
+          ToPort: 3128
+          DestinationPrefixListId: !Ref LatticePrefixListId
+          Description: Proxy to VPC Lattice (centralized egress)
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-lattice-sg'
+
   VpcAssociation:
     Type: AWS::VpcLattice::ServiceNetworkVpcAssociation
     Properties:
@@ -53,3 +89,6 @@ Outputs:
   ServiceNetworkId:
     Description: Service Network ID the VPC was associated with
     Value: !Ref ServiceNetworkId
+  WorkloadLatticeSecurityGroupId:
+    Description: Security group permitting workload egress to the VPC Lattice prefix list
+    Value: !Ref WorkloadLatticeSecurityGroup

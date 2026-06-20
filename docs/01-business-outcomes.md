@@ -8,7 +8,7 @@ The numbers below are expressed in **resource counts and cost drivers** (per-hou
 
 ## Outcome 1: Cost reduction
 
-The traditional pattern bills connectivity infrastructure roughly **once per account**. The VPC Lattice sole-fabric pattern bills it roughly **once per environment** (dev, stage, prod), regardless of how many accounts consume it. The savings come from eliminating or consolidating three categories of duplicated resource.
+The traditional pattern bills connectivity infrastructure roughly **once per account**. The VPC Lattice sole-fabric pattern bills it roughly **once per environment** (dev, test, prod), regardless of how many accounts consume it. The savings come from eliminating or consolidating three categories of duplicated resource.
 
 ### Eliminated per-account interface VPC endpoints
 
@@ -103,7 +103,7 @@ In the sole-fabric pattern, onboarding is a **single VPC association** to the ap
 
 ### Reduced configuration drift
 
-When the same 10-plus endpoints, NAT Gateways, route tables, and security groups are deployed independently in every account, they inevitably diverge, a security group rule tightened in one account but not another, an endpoint policy updated here but missed there. This drift is one of the hardest problems to detect and the easiest way for a control to silently weaken.
+When the same 10+ endpoints, NAT Gateways, route tables, and security groups are deployed independently in every account, they inevitably diverge, a security group rule tightened in one account but not another, an endpoint policy updated here but missed there. This drift is one of the hardest problems to detect and the easiest way for a control to silently weaken.
 
 In the sole-fabric pattern, the shared resources are configured **once** in the Network account and consumed identically by every workload account. There is one endpoint fleet to configure, one egress filter to maintain, and one set of Service Network policies to govern.
 
@@ -128,7 +128,7 @@ The sole-fabric pattern does not just move resources around, it centralizes the 
 
 ### Centralized access control by OU path
 
-Each of the three Service Networks (dev, stage, prod) carries its own Identity and Access Management (IAM) auth policy that restricts access by organizational unit (OU) path, using condition keys such as `aws:PrincipalOrgID` and `aws:PrincipalOrgPaths`. A dev workload cannot reach prod-shared connectivity, and the boundary is enforced by policy rather than by hoping every account's local configuration is correct.
+Each of the three Service Networks (dev, test, prod) carries its own Identity and Access Management (IAM) auth policy that restricts access by organizational unit (OU) path, using condition keys such as `aws:PrincipalOrgID` and `aws:PrincipalOrgPaths`. A dev workload cannot reach prod-shared connectivity, and the boundary is enforced by policy rather than by hoping every account's local configuration is correct.
 
 > **Business impact.** Environment isolation becomes a property of the fabric itself, defined in three policies and enforced uniformly, rather than a property that each of hundreds of accounts must independently get right. This is a control a security architect can read, validate, and attest to in minutes during a Well-Architected or compliance review.
 

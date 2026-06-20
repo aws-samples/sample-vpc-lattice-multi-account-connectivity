@@ -4,7 +4,7 @@ The [Cost and Operational Comparison](11-cost-comparison.md) section closed the 
 
 Each troubleshooting scenario follows the same shape so it is quick to scan under pressure: **Symptom** (what you observe), **Likely cause(s)** (what usually produces it), **Diagnosis** (the command or console navigation that confirms the cause), and **Resolution** (the steps that fix it). The diagnostic commands are real AWS CLI commands you can run as-is, substituting the placeholder identifiers for your own.
 
-> **A note on conventions.** As elsewhere in this guide, examples use the `us-east-2` Region and placeholder identifiers (organization ID `o-EXAMPLE12345`, account `111111111111`). The reference IaC deploys **three Service Networks**, one each for dev, stage, and prod, named `sn-{env}-shared` in both the AWS Cloud Development Kit (CDK) and AWS CloudFormation paths. This section refers to them generically (for example, "the dev service network"), but remember that the name you pass into the workload association **must match the actual Service Network name** created in [Phase 1: Foundation](04-phase1-foundation.md). No customer-identifying information is implied; substitute your own values.
+> **A note on conventions.** As elsewhere in this guide, examples use the `us-east-2` Region and placeholder identifiers (organization ID `o-EXAMPLE12345`, account `111111111111`). The reference IaC deploys **three Service Networks**, one each for dev, test, and prod, named `sn-{env}-shared` in both the AWS Cloud Development Kit (CDK) and AWS CloudFormation paths. This section refers to them generically (for example, "the dev service network"), but remember that the name you pass into the workload association **must match the actual Service Network name** created in [Phase 1: Foundation](04-phase1-foundation.md). No customer-identifying information is implied; substitute your own values.
 
 ## Troubleshooting
 
@@ -12,14 +12,14 @@ The scenarios below are ordered roughly by where they surface in the deployment 
 
 ### Failed VPC association, "Service network not found"
 
-**Symptom.** A workload association deployment ([Phase 4](07-phase4-workload-onboarding.md)) fails during the lookup custom resource with a message such as `Service network 'sn-dev-shared' not found. Ensure the RAM share has been accepted in this account.` On the CloudFormation path the custom resource returns `FAILED` with the same reason and the stack rolls back.
+**Symptom.** A workload association deployment ([Phase 4](07-phase4-workload-onboarding.md)) fails to create the `ServiceNetworkVpcAssociation`. The most common reason is that the RAM-shared service network ID passed to the stack is not valid or visible in the target account, because the share has not reached the account's OU.
 
 **Likely cause(s).** In order of frequency:
 
-1. **The RAM share has not reached this account's organizational unit (OU).** The lookup Lambda resolves the Service Network *by name* via `vpc-lattice:ListServiceNetworks`; if the network has not been shared to (and auto-accepted by) this account, the API returns nothing to match and the lookup fails. This is by far the most common cause.
+1. **The RAM share has not reached this account's organizational unit (OU).** The service network ID passed to the association is only valid in accounts that have received (and auto-accepted) the RAM share; until then, the association cannot attach to it. This is by far the most common cause.
 2. **Organization-wide RAM sharing was never enabled.** If `aws ram enable-sharing-with-aws-organization` was not run once in the management account, shares cannot target OUs and accounts do not auto-accept them.
-3. **The account is outside the OUs the share targets.** A dev account that lives in a stage OU never receives the dev share.
-4. **A name mismatch.** The `serviceNetworkName` passed into the stack does not exactly match the network created in Phase 1 (for example, `sn-dev-shared` was passed but the network is named `sn-dev-shared`, or there is a typo).
+3. **The account is outside the OUs the share targets.** A dev account that lives in a test OU never receives the dev share.
+4. **The wrong service network ID was passed.** The `serviceNetworkId` passed into the stack is not the environment's actual RAM-shared network ID (for example, a test ID was passed for a dev OU). The name is used only for the association tag, so a name typo does not by itself break the association; the ID is what must be correct.
 
 **Diagnosis.** From the workload account, confirm whether the network is even visible, then check the share status:
 
@@ -50,8 +50,8 @@ In the console: **RAM → Shared with me → Resource shares** in the workload a
   ```
 
 - If the account is in the wrong OU, move it into an OU that the environment's share targets (or add that OU as a principal on the share in [Phase 1](04-phase1-foundation.md)). With organization sharing enabled, accounts in a targeted OU **auto-accept** the share, there is no manual invitation to accept.
-- If it is a name mismatch, correct the `serviceNetworkName` (CDK prop) or `ServiceNetworkName` (CloudFormation parameter) to exactly match the Phase 1 network name for that environment, and re-deploy. List the actual names with the command above.
-- After the share is in place, re-run the deployment. The lookup `ListServiceNetworks` call will now return the network and the association proceeds.
+- If the wrong ID was passed, correct the `serviceNetworkId` (CDK prop) or `ServiceNetworkId` (CloudFormation parameter) to the environment's actual RAM-shared network ID, and re-deploy. List the visible networks and their IDs with the command above.
+- After the share is in place, re-run the deployment. The shared service network ID is now valid in the account and the association proceeds.
 
 ### Failed VPC association, RAM share not accepted or stuck
 
@@ -365,7 +365,7 @@ The result is a low-risk migration: the fabric proves itself on a pilot OU, expa
 
 **A VPC Lattice Service Network is a regional construct, so a multi-Region deployment replicates the pattern per Region.** This is the resolution target that [Well-Architected Framework Alignment](10-well-architected.md) forward-references for multi-Region considerations. There is no single global Service Network; each Region you operate in gets its own copy of the fabric:
 
-- **Per-Region Service Networks.** Deploy the three Service Networks (dev/stage/prod) in each Region.
+- **Per-Region Service Networks.** Deploy the three Service Networks (dev/test/prod) in each Region.
 - **Per-Region shared components.** Deploy a Resource Gateway, the interface endpoints, the Resource Configurations, and the egress proxy stack in each Region's Network-account VPCs. Endpoints and the proxy are regional resources.
 - **Per-Region workload association.** Associate each workload VPC to the Service Network **in its own Region**, a VPC in `us-east-2` associates to the `us-east-2` Service Network, a VPC in `us-west-2` to the `us-west-2` one. The custom-resource lookup and `PrivateDnsEnabled` behavior are identical in each Region.
 - **RAM shares and auth policies are regional.** Create the RAM shares and the OU-path IAM auth policies in each Region; they do not span Regions.
@@ -376,7 +376,7 @@ Operationally this means your IaC is parameterized by Region and instantiated on
 
 **Yes.** The reference exposes 10 endpoints on the CDK path (11 on the CloudFormation path, which adds `execute-api`). To add another AWS service:
 
-1. Deploy the interface VPC endpoint for the new service in the Endpoint VPC (the Lambda discovers it; it does not create it).
+1. Deploy the interface VPC endpoint for the new service in the Endpoint VPC (it is then referenced by its regional DNS name, read natively from `DnsEntries` on the CDK path, or discovered by the VPCE DNS lookup Lambda on the CloudFormation path).
 2. Add the service to the `endpoints` array in `VpcLatticeEndpointsStack` (CDK) or to the endpoint list in the combined CloudFormation template. Each entry produces a Resource Configuration on `443/TCP` associated to all three Service Networks.
 3. Redeploy. Workloads resolve the new domain automatically through the Lattice-managed PHZ, no per-account change is required. See [Phase 2](05-phase2-shared-endpoints.md#step-3--create-a-resource-configuration-per-endpoint-and-associate-to-all-three-service-networks) for the structure.
 
@@ -394,9 +394,9 @@ The managed IP range depends on **what** you are resolving, and this is the sing
 
 This guide exposes everything as **VPC resources**, so a correct `dig +short ssm.{region}.amazonaws.com` from inside an associated workload VPC returns an address in the `129.224.0.0/17` range. (Earlier drafts of this guide cited `169.254.171.x` here; that is the *services* range and does not apply to the resource-based pattern.) The reliable signal in all cases is that the answer is **not** part of your workload VPC CIDR and **not** the service's public anycast IP. The reference Resource Configurations use `IpAddressType: IPV4`; if you require IPv6 resolution end to end, set the appropriate `IpAddressType` on the Resource Configurations and confirm your endpoints and subnets are dual-stack.
 
-### What runtime do the Lambda custom resources use?
+### What runtime does the Lambda custom resource use?
 
-**Python 3.12.** Both the VPCE DNS lookup Lambda ([Phase 2](05-phase2-shared-endpoints.md)) and the workload-association lookup Lambda ([Phase 4](07-phase4-workload-onboarding.md)) run on the Python 3.12 runtime, which is the standard for this pattern. The standalone handler and the CloudFormation templates specify `python3.12`; if an inline CDK function references a different runtime enum, align it to Python 3.12 to match the documented standard.
+**Python 3.12.** The solution has a single Lambda, the VPCE DNS lookup ([Phase 2](05-phase2-shared-endpoints.md)) on the **CloudFormation path**, and it runs on the Python 3.12 runtime, which is the standard for this pattern. The CDK path has no Lambda (it reads endpoint DNS natively from the endpoint's `DnsEntries`), and the workload association uses no Lambda on either path (the VPC ID resolves via a native `AWS::SSM::Parameter::Value` and the service network ID is passed as a parameter).
 
 ### How do I update the egress allowlist without a full redeploy?
 
@@ -407,3 +407,7 @@ By default the allowlist is the `ALLOWED_DOMAINS` environment variable on the ta
 With the common failure modes diagnosable from the command index above and the evaluation questions answered, the operational picture of the pattern is complete. The next section consolidates the security review: the threats identified during threat modeling, the mitigations applied in the IaC, and any accepted residual risks.
 
 Continue to [Security Findings Summary](13-security-findings.md).
+
+### Can a Lambda function bypass the centralized egress proxy?
+
+Yes, if it has no VPC configuration. Centralized egress only filters traffic that leaves through your VPCs; a Lambda function with no VPC attachment runs on AWS-managed network and reaches the internet on a path the proxy never sees. A VPC Lattice Service that targets such a function can even turn it into a reusable egress shortcut. You cannot apply network rules to a function that is not in your VPC, so govern it: require VPC attachment with a Service Control Policy (the `lambda:VpcIds` / `lambda:SubnetIds` / `lambda:SecurityGroupIds` condition keys), detect drift with the AWS Config rule `lambda-inside-vpc`, and give teams a golden template that ships VPC config plus proxy settings. Once a function is attached to the isolated workload VPC, the only egress is Lattice to Squid. See [What centralized egress does not cover](06-phase3-centralized-egress.md#what-centralized-egress-does-not-cover-and-how-to-govern-it) for the full rationale and references.

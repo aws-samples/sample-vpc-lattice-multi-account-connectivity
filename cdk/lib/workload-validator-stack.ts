@@ -10,10 +10,12 @@ export interface WorkloadValidatorStackProps extends cdk.StackProps {
   vpcSsmPath: string;
   /** SSM parameter path holding a private app subnet ID. */
   subnetSsmPath: string;
+  /** VPC Lattice managed prefix list ID. When set, validator egress is scoped to it (443 + 3128). */
+  latticePrefixListId?: string;
 }
 
 /**
- * WorkloadValidatorStack (Workload Dev account) — VALIDATION ONLY
+ * WorkloadValidatorStack (Workload Dev account): VALIDATION ONLY
  *
  * A single, small SSM-managed EC2 instance placed in the workload VPC so that
  * connectivity can be validated from inside the VPC:
@@ -55,19 +57,36 @@ export class WorkloadValidatorStack extends cdk.Stack {
       resources: ['*'],
     }));
 
-    // No-inbound security group; egress open (Session Manager is outbound-only,
-    // and egress validation routes through the Lattice proxy).
+    // No-inbound security group. When the Lattice prefix list is known, egress
+    // is scoped to the Lattice data plane: 443 for AWS service endpoints and
+    // 3128 for the Squid egress proxy, which is the only path this isolated VPC
+    // has. Falls back to allow-all only when no prefix list is supplied (a lab
+    // or credential-less synth), mirroring the foundation SG conditional.
+    const latticePrefixListId = props.latticePrefixListId;
     const sg = new ec2.SecurityGroup(this, 'ValidatorSg', {
       vpc,
       description: 'Validator instance - no inbound, SSM-managed',
-      allowAllOutbound: true,
+      allowAllOutbound: !latticePrefixListId,
     });
+    if (latticePrefixListId) {
+      sg.addEgressRule(
+        ec2.Peer.prefixList(latticePrefixListId),
+        ec2.Port.tcp(443),
+        'HTTPS to VPC Lattice (AWS service endpoints via the fabric)',
+      );
+      sg.addEgressRule(
+        ec2.Peer.prefixList(latticePrefixListId),
+        ec2.Port.tcp(3128),
+        'Proxy to VPC Lattice (centralized egress)',
+      );
+    }
 
     const instance = new ec2.Instance(this, 'Validator', {
       vpc,
       vpcSubnets: { subnets: [validatorSubnet] },
       instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.MICRO),
       machineImage: ec2.MachineImage.latestAmazonLinux2023(),
+      instanceName: 'netfabric-workload-validator',
       role,
       securityGroup: sg,
       requireImdsv2: true,

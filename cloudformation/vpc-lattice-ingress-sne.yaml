@@ -1,0 +1,247 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Phase 5 ingress: a Service Network VPC Endpoint (SN-E) that exposes a
+  RAM-shared VPC Lattice service network to consumers that an association
+  cannot serve (external clients, on-premises over Direct Connect or VPN, and
+  cross-Region consumers). This is the Network-account piece. The custom-domain
+  DNS record that maps your domain to the endpoint's generated name is created
+  by the DNS automation, which is deferred to the maintained AWS solution
+  "Guidance for Amazon VPC Lattice Automated DNS Configuration on AWS". An
+  optional inbound Route 53 Resolver endpoint is included so on-premises and
+  cross-Region resolvers can query the Lattice-managed names.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Service network and ingress VPC
+        Parameters:
+          - ServiceNetworkArn
+          - IngressVpcId
+          - IngressSubnetAId
+          - IngressSubnetBId
+          - IngressSubnetCId
+      - Label:
+          default: Access control
+        Parameters:
+          - ConsumerSourceCidr
+          - AppPortPrimary
+          - AppPortSecondary
+          - LatticePrefixListId
+      - Label:
+          default: Optional inbound DNS resolution (on-premises / cross-Region)
+        Parameters:
+          - CreateInboundResolver
+          - ResolverQuerySourceCidr
+
+Parameters:
+  ServiceNetworkArn:
+    Type: String
+    AllowedPattern: '^arn:[a-z-]+:vpc-lattice:[a-z0-9-]+:\d{12}:servicenetwork/sn-[0-9a-z]{17}$'
+    Description: >
+      ARN of the service network to expose (the RAM-shared network from the
+      Network account, e.g. arn:aws:vpc-lattice:us-east-2:111111111111:servicenetwork/sn-EXAMPLEdev0000000).
+
+  Environment:
+    Type: String
+    AllowedValues: [dev, test, prod]
+    Description: Environment this SN-E fronts. Determines the SSM path the endpoint ID is published under.
+
+  SsmPrefix:
+    Type: String
+    Default: /netfabric
+    AllowedPattern: '^/[a-zA-Z0-9/_.-]+[^/]$'
+    Description: SSM namespace. The SN-E ID is published at <SsmPrefix>/ingress/<Environment>/sne/id for the DNS automation to read.
+
+  IngressVpcId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::VPC::Id>
+    Default: /netfabric/network/ingress-vpc/id
+    Description: SSM path resolving to the Ingress VPC ID (published by network-foundation.yaml). The SN-E ENIs are created here.
+
+  IngressSubnetAId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Subnet::Id>
+    Default: /netfabric/network/ingress-vpc/subnet/a/id
+    Description: SSM path resolving to Ingress VPC subnet a (AZ a).
+
+  IngressSubnetBId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Subnet::Id>
+    Default: /netfabric/network/ingress-vpc/subnet/b/id
+    Description: SSM path resolving to Ingress VPC subnet b (AZ b).
+
+  IngressSubnetCId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Subnet::Id>
+    Default: /netfabric/network/ingress-vpc/subnet/c/id
+    Description: SSM path resolving to Ingress VPC subnet c (AZ c).
+
+  ConsumerSourceCidr:
+    Type: String
+    AllowedPattern: '^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$'
+    Description: IPv4 CIDR allowed to reach the SN-E on the workload app port(s) (your on-premises, cross-Region, or external consumer range). Do not use 0.0.0.0/0.
+
+  AppPortPrimary:
+    Type: Number
+    Default: 80
+    MinValue: 1
+    MaxValue: 65535
+    Description: Primary workload application port the SN-E fronts (the port the workload app Resource Configuration listens on).
+
+  AppPortSecondary:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    MaxValue: 65535
+    Description: Optional second workload application port (for example 443 for HTTPS). Leave 0 to front only the primary port.
+
+  LatticePrefixListId:
+    Type: String
+    AllowedPattern: '^pl-[0-9a-f]{8,17}$'
+    Description: VPC Lattice managed prefix list ID for this Region (com.amazonaws.<region>.vpc-lattice). Scopes SN-E egress to the Lattice data plane.
+
+  CreateInboundResolver:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: Create a Route 53 Resolver inbound endpoint so on-premises and cross-Region resolvers can query the Lattice-managed DNS names.
+
+  ResolverQuerySourceCidr:
+    Type: String
+    Default: 192.0.2.0/24
+    AllowedPattern: '^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$'
+    Description: IPv4 CIDR of the DNS resolvers allowed to query the inbound Resolver endpoint on port 53. Override the placeholder (RFC 5737 documentation range) with your real resolver range when CreateInboundResolver is true.
+
+Conditions:
+  HasInboundResolver: !Equals [!Ref CreateInboundResolver, 'true']
+  HasSecondaryAppPort: !Not [!Equals [!Ref AppPortSecondary, 0]]
+
+Resources:
+  # Security group for the SN-E ENIs. External/on-premises/cross-Region consumers
+  # connect inbound on the workload app port(s); the SN-E forwards into the
+  # Lattice data plane on the same port(s). Both directions are tightly scoped
+  # (consumer CIDR inbound, Lattice managed prefix list outbound), never 0.0.0.0/0.
+  SneSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub 'VPC Lattice SN-E ingress to workload app - ${AWS::StackName}'
+      VpcId: !Ref IngressVpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref AppPortPrimary
+          ToPort: !Ref AppPortPrimary
+          CidrIp: !Ref ConsumerSourceCidr
+          Description: Workload app primary port from approved consumers (external / on-premises / cross-Region)
+        - !If
+          - HasSecondaryAppPort
+          - IpProtocol: tcp
+            FromPort: !Ref AppPortSecondary
+            ToPort: !Ref AppPortSecondary
+            CidrIp: !Ref ConsumerSourceCidr
+            Description: Workload app secondary port from approved consumers
+          - !Ref AWS::NoValue
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: !Ref AppPortPrimary
+          ToPort: !Ref AppPortPrimary
+          DestinationPrefixListId: !Ref LatticePrefixListId
+          Description: Workload app primary port into the VPC Lattice data plane
+        - !If
+          - HasSecondaryAppPort
+          - IpProtocol: tcp
+            FromPort: !Ref AppPortSecondary
+            ToPort: !Ref AppPortSecondary
+            DestinationPrefixListId: !Ref LatticePrefixListId
+            Description: Workload app secondary port into the VPC Lattice data plane
+          - !Ref AWS::NoValue
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-sne-sg'
+
+  # The Service Network VPC Endpoint. Unlike an association (SN-A), an SN-E
+  # publishes a generated DNS name per associated service/resource; you map your
+  # custom domain to it with a CNAME or Route 53 alias (created by the DNS
+  # automation, deferred to the AWS Guidance solution).
+  ServiceNetworkEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: ServiceNetwork
+      ServiceNetworkArn: !Ref ServiceNetworkArn
+      VpcId: !Ref IngressVpcId
+      SubnetIds: [!Ref IngressSubnetAId, !Ref IngressSubnetBId, !Ref IngressSubnetCId]
+      SecurityGroupIds:
+        - !Ref SneSecurityGroup
+      IpAddressType: ipv4
+      # Custom-domain DNS is managed by the ingress DNS automation (the
+      # ingress.internal private hosted zone + CNAME records), so the SN-E's own
+      # managed private DNS is disabled. This also avoids a CloudFormation
+      # stabilization timeout: with private DNS enabled the endpoint provisions a
+      # managed hosted zone for every associated resource configuration, which on
+      # a service network with many associations can exceed the
+      # AWS::EC2::VPCEndpoint stabilization window. PrivateDnsEnabled is immutable.
+      PrivateDnsEnabled: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-sne'
+
+  # Publish the SN-E ID so the ingress DNS automation can resolve its generated
+  # DNS names (vpc-lattice-ingress-dns-automation.yaml reads these paths).
+  SneIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '${SsmPrefix}/ingress/${Environment}/sne/id'
+      Type: String
+      Value: !Ref ServiceNetworkEndpoint
+      Description: !Sub 'VPC Lattice Service Network VPC Endpoint (SN-E) ID for the ${Environment} environment'
+
+  # Optional: inbound Route 53 Resolver endpoint so external/on-premises and
+  # cross-Region resolvers can resolve the Lattice-managed names. The private
+  # hosted zone and the custom-domain record itself are created by the DNS
+  # automation (the AWS Guidance solution), not by this template.
+  ResolverSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: HasInboundResolver
+    Properties:
+      GroupDescription: !Sub 'Route 53 inbound resolver - ${AWS::StackName}'
+      VpcId: !Ref IngressVpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: !Ref ResolverQuerySourceCidr
+          Description: DNS over TCP from approved resolvers
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: !Ref ResolverQuerySourceCidr
+          Description: DNS over UDP from approved resolvers
+      SecurityGroupEgress:
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: !Ref ConsumerSourceCidr
+          Description: DNS responses to the resolver source range
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-resolver-sg'
+
+  InboundResolverEndpoint:
+    Type: AWS::Route53Resolver::ResolverEndpoint
+    Condition: HasInboundResolver
+    Properties:
+      Name: !Sub '${AWS::StackName}-inbound'
+      Direction: INBOUND
+      SecurityGroupIds:
+        - !Ref ResolverSecurityGroup
+      IpAddresses:
+        - SubnetId: !Ref IngressSubnetAId
+        - SubnetId: !Ref IngressSubnetBId
+
+Outputs:
+  ServiceNetworkEndpointId:
+    Description: The Service Network VPC Endpoint (SN-E) ID. Read its generated DNS names with aws ec2 describe-vpc-endpoints.
+    Value: !Ref ServiceNetworkEndpoint
+  SneSecurityGroupId:
+    Description: Security group governing consumer access to the SN-E.
+    Value: !Ref SneSecurityGroup
+  InboundResolverEndpointId:
+    Condition: HasInboundResolver
+    Description: Route 53 inbound Resolver endpoint ID (target on-premises conditional forwarders at its IPs).
+    Value: !Ref InboundResolverEndpoint

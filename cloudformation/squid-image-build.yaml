@@ -1,0 +1,183 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Builds the custom Squid proxy container image with CodeBuild and pushes it to
+  ECR. The build context (Dockerfile, squid.conf, allowlist.txt, entrypoint.sh)
+  is embedded inline via the buildspec. After a successful build the image URI is
+  published to SSM so the squid-egress-proxy stack can resolve it at deploy time.
+
+  Deploy this stack first, trigger the build, wait for success, then deploy
+  squid-egress-proxy.yaml. CloudFormation equivalent of the CDK SquidImageBuildStack.
+
+Parameters:
+  SsmPrefix:
+    Type: String
+    Default: /netfabric
+    AllowedPattern: '^/[a-zA-Z0-9/_.-]+[^/]$'
+    Description: SSM namespace prefix. The image URI is published at <prefix>/egress/squid-image-uri.
+
+  AllowedDomains:
+    Type: String
+    Default: '.amazonaws.com .aws.amazon.com .amazonlinux.com'
+    Description: Space-separated list of domains for the Squid allowlist (prefix with . for subdomains).
+
+Resources:
+
+  EcrRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub
+        - '${Prefix}-squid-proxy'
+        - Prefix: !Select [1, !Split ['/', !Ref SsmPrefix]]
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      ImageTagMutability: IMMUTABLE
+      EncryptionConfiguration:
+        EncryptionType: AES256
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep only the last 5 images",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 5
+                },
+                "action": { "type": "expire" }
+              }
+            ]
+          }
+
+  BuildLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub
+        - '/aws/codebuild/${Prefix}-squid-proxy-build'
+        - Prefix: !Select [1, !Split ['/', !Ref SsmPrefix]]
+      RetentionInDays: 30
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: SquidBuildPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ECRAuth
+                Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: '*'
+              - Sid: ECRPush
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:CompleteLayerUpload
+                  - ecr:InitiateLayerUpload
+                  - ecr:PutImage
+                  - ecr:UploadLayerPart
+                Resource: !GetAtt EcrRepository.Arn
+              - Sid: SSMPut
+                Effect: Allow
+                Action: ssm:PutParameter
+                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SsmPrefix}/egress/squid-image-uri'
+              - Sid: Logs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !GetAtt BuildLogGroup.Arn
+
+  SquidBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub
+        - '${Prefix}-squid-proxy-build'
+        - Prefix: !Select [1, !Split ['/', !Ref SsmPrefix]]
+      Description: Builds the Squid proxy image and pushes to ECR
+      TimeoutInMinutes: 15
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
+        Type: LINUX_CONTAINER
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: ECR_REPO_URI
+            Value: !GetAtt EcrRepository.RepositoryUri
+          - Name: AWS_ACCOUNT_ID
+            Value: !Ref 'AWS::AccountId'
+          - Name: IMAGE_URI_SSM_PATH
+            Value: !Sub '${SsmPrefix}/egress/squid-image-uri'
+          - Name: ALLOWED_DOMAINS
+            Value: !Ref AllowedDomains
+      Source:
+        Type: NO_SOURCE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            pre_build:
+              commands:
+                - echo Logging in to Amazon ECR...
+                - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+                - IMAGE_TAG=$(date +%Y%m%d-%H%M%S)
+            build:
+              commands:
+                - mkdir -p build
+                - echo "RlJPTSBwdWJsaWMuZWNyLmF3cy9sdHMvdWJ1bnR1OjIwLjA0X3N0YWJsZQoKRU5WIFNRVUlEX0NBQ0hFX0RJUj0vdmFyL3Nwb29sL3NxdWlkIFwKICAgIFNRVUlEX0xPR19ESVI9L3Zhci9sb2cvc3F1aWQgXAogICAgU1FVSURfVVNFUj1wcm94eQoKUlVOIGFwdC1nZXQgdXBkYXRlICYmIFwKICAgIERFQklBTl9GUk9OVEVORD1ub25pbnRlcmFjdGl2ZSBhcHQtZ2V0IGluc3RhbGwgLXkgLS1uby1pbnN0YWxsLXJlY29tbWVuZHMgc3F1aWQgJiYgXAogICAgcm0gLXJmIC92YXIvbGliL2FwdC9saXN0cy8qCgojIFdvcmthcm91bmQgZm9yIGh0dHBzOi8vZ2l0aHViLmNvbS9tb2J5L21vYnkvaXNzdWVzLzMxMjQzClJVTiB1c2VybW9kIC1hIC1HIHR0eSBwcm94eQoKIyBDcmVhdGUgZGlycyB3aXRoIGNvcnJlY3Qgb3duZXJzaGlwIGF0IGJ1aWxkIHRpbWUKUlVOIG1rZGlyIC1wICR7U1FVSURfQ0FDSEVfRElSfSAke1NRVUlEX0xPR19ESVJ9ICYmIFwKICAgIGNob3duIC1SICR7U1FVSURfVVNFUn06JHtTUVVJRF9VU0VSfSAke1NRVUlEX0NBQ0hFX0RJUn0gJHtTUVVJRF9MT0dfRElSfQoKQ09QWSBlbnRyeXBvaW50LnNoIC9zYmluL2VudHJ5cG9pbnQuc2gKUlVOIGNobW9kIDc1NSAvc2Jpbi9lbnRyeXBvaW50LnNoCgpDT1BZIHNxdWlkLmNvbmYgL2V0Yy9zcXVpZC9zcXVpZC5jb25mCkNPUFkgYWxsb3dsaXN0LnR4dCAvZXRjL3NxdWlkL2FsbG93bGlzdC50eHQKCkVYUE9TRSAzMTI4L3RjcApVU0VSIHByb3h5CkVOVFJZUE9JTlQgWyIvc2Jpbi9lbnRyeXBvaW50LnNoIl0K" | base64 -d > build/Dockerfile
+                - echo "IyEvYmluL2Jhc2gKIyBCYXNlZCBvbjogaHR0cHM6Ly9naXRodWIuY29tL2F3cy1zYW1wbGVzL2NlbnRyYWxpc2VkLWVncmVzcy1wcm94eQpzZXQgLWV1byBwaXBlZmFpbAoKIyBJbml0aWFsaXplIGNhY2hlIGlmIG5lZWRlZAppZiBbWyAhIC1kICR7U1FVSURfQ0FDSEVfRElSfS8wMCBdXTsgdGhlbgogIGVjaG8gIkluaXRpYWxpemluZyBjYWNoZS4uLiIKICBzcXVpZCAtTiAtZiAvZXRjL3NxdWlkL3NxdWlkLmNvbmYgLXoKZmkKCiMgU3RhcnQgc3F1aWQKZWNobyAiU3RhcnRpbmcgc3F1aWQuLi4iCmV4ZWMgc3F1aWQgLWYgL2V0Yy9zcXVpZC9zcXVpZC5jb25mIC1OWUNkIDEK" | base64 -d > build/entrypoint.sh
+                - echo "IyA9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09CiMgU3F1aWQgUHJveHkgLSBQcm9kdWN0aW9uIENvbmZpZ3VyYXRpb24KIyBDZW50cmFsaXplZCBlZ3Jlc3MgZm9yIFZQQyBMYXR0aWNlIHdvcmtsb2FkcwojIEJhc2VkIG9uOiBodHRwczovL2dpdGh1Yi5jb20vYXdzLXNhbXBsZXMvY2VudHJhbGlzZWQtZWdyZXNzLXByb3h5CiMgPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PQoKIyBEb21haW4gYWxsb3dsaXN0IC0gdXBkYXRlIGFsbG93bGlzdC50eHQgdG8gbWFuYWdlIHBlcm1pdHRlZCBkb21haW5zCmFjbCBhbGxvd2xpc3QgZHN0ZG9tYWluICIvZXRjL3NxdWlkL2FsbG93bGlzdC50eHQiCmh0dHBfYWNjZXNzIGFsbG93IGFsbG93bGlzdApodHRwX2FjY2VzcyBkZW55IGFsbAoKIyBOZXR3b3JrIEFDTHMKYWNsIGFsbCBzcmMgYWxsCmFjbCBtYW5hZ2VyIHByb3RvIGNhY2hlX29iamVjdAphY2wgbG9jYWxob3N0IHNyYyAxMjcuMC4wLjEvMzIKYWNsIHRvX2xvY2FsaG9zdCBkc3QgMTI3LjAuMC4wLzggMC4wLjAuMC8zMgoKYWNsIGxvY2FsbmV0IHNyYyAxMC4wLjAuMC84ICAgICAgICMgUkZDMTkxOAphY2wgbG9jYWxuZXQgc3JjIDE3Mi4xNi4wLjAvMTIgICAgIyBSRkMxOTE4CmFjbCBsb2NhbG5ldCBzcmMgMTkyLjE2OC4wLjAvMTYgICAjIFJGQzE5MTgKYWNsIGxvY2FsbmV0IHNyYyBmYzAwOjovNyAgICAgICAgICAjIFJGQzQxOTMgbG9jYWwgcHJpdmF0ZSBuZXR3b3JrCmFjbCBsb2NhbG5ldCBzcmMgZmU4MDo6LzEwICAgICAgICAgIyBSRkM0MjkxIGxpbmstbG9jYWwKCiMgUG9ydCBBQ0xzCmFjbCBTU0xfcG9ydHMgcG9ydCA0NDMKYWNsIFNhZmVfcG9ydHMgcG9ydCA4MCAgICAgICAgICAgICAjIEhUVFAKYWNsIFNhZmVfcG9ydHMgcG9ydCA0NDMgICAgICAgICAgICAjIEhUVFBTCmFjbCBTYWZlX3BvcnRzIHBvcnQgMTAyNS02NTUzNSAgICAgIyBVbnJlZ2lzdGVyZWQgcG9ydHMKYWNsIENPTk5FQ1QgbWV0aG9kIENPTk5FQ1QKCiMgTG9nZ2luZwphY2wgaGFzUmVxdWVzdCBoYXMgcmVxdWVzdAphY2Nlc3NfbG9nIHN0ZGlvOi9kZXYvc3Rkb3V0IGhhc1JlcXVlc3QKcGlkX2ZpbGVuYW1lIC90bXAvc3F1aWQucGlkCgojIEFjY2VzcyBydWxlcyAob3JkZXIgbWF0dGVycykKaHR0cF9hY2Nlc3MgZGVueSAhU2FmZV9wb3J0cwpodHRwX2FjY2VzcyBkZW55IENPTk5FQ1QgIVNTTF9wb3J0cwpodHRwX2FjY2VzcyBhbGxvdyBsb2NhbGhvc3QgbWFuYWdlcgpodHRwX2FjY2VzcyBkZW55IG1hbmFnZXIKaHR0cF9hY2Nlc3MgZGVueSBhbGwKCiMgTGlzdGVuIG9uIHBvcnQgMzEyOApodHRwX3BvcnQgMzEyOAoKIyBTZWN1cml0eSBoYXJkZW5pbmcKZm9yd2FyZGVkX2ZvciBkZWxldGUKdmlhIG9mZgpodHRwZF9zdXBwcmVzc192ZXJzaW9uX3N0cmluZyBvbgoKIyBQZXJmb3JtYW5jZQpjb3JlZHVtcF9kaXIgL3Zhci9zcG9vbC9zcXVpZApyZWZyZXNoX3BhdHRlcm4gXmZ0cDogICAgICAgMTQ0MCAgMjAlICAxMDA4MApyZWZyZXNoX3BhdHRlcm4gXmdvcGhlcjogICAgMTQ0MCAgMCUgICAxNDQwCnJlZnJlc2hfcGF0dGVybiAtaSAoL2NnaS1iaW4vfFw/KSAwICAwJSAgMApyZWZyZXNoX3BhdHRlcm4gLiAgICAgICAgICAgMCAgICAgMjAlICA0MzIwCg==" | base64 -d > build/squid.conf
+                - printf '%s\n' $ALLOWED_DOMAINS > build/allowlist.txt
+                - echo Building the Squid image...
+                - docker build -t $ECR_REPO_URI:$IMAGE_TAG build/
+            post_build:
+              commands:
+                - echo Pushing the image...
+                - docker push $ECR_REPO_URI:$IMAGE_TAG
+                - echo Writing image URI to SSM...
+                - aws ssm put-parameter --name $IMAGE_URI_SSM_PATH --type String --overwrite --value $ECR_REPO_URI:$IMAGE_TAG
+                - echo "Done - $ECR_REPO_URI:$IMAGE_TAG"
+      Artifacts:
+        Type: NO_ARTIFACTS
+      LogsConfig:
+        CloudWatchLogs:
+          GroupName: !Ref BuildLogGroup
+          Status: ENABLED
+
+  ImageUriParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '${SsmPrefix}/egress/squid-image-uri'
+      Type: String
+      Value: !Sub '${EcrRepository.RepositoryUri}:bootstrap'
+      Description: Squid proxy image URI (updated by CodeBuild after successful build)
+
+Outputs:
+  EcrRepositoryUri:
+    Value: !GetAtt EcrRepository.RepositoryUri
+    Description: ECR repository URI for the Squid proxy image
+
+  CodeBuildProjectName:
+    Value: !Ref SquidBuildProject
+    Description: CodeBuild project name. Trigger with - aws codebuild start-build --project-name <this-value>
+
+  BuildCommand:
+    Value: !Sub
+      - 'aws codebuild start-build --project-name ${Project} --region ${AWS::Region}'
+      - Project: !Ref SquidBuildProject
+    Description: CLI command to trigger the image build
+
+  ImageUriSsmPath:
+    Value: !Sub '${SsmPrefix}/egress/squid-image-uri'
+    Description: SSM parameter path where the built image URI is stored

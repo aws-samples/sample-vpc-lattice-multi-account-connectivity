@@ -2,7 +2,7 @@
 
 The [Prerequisites](02-prerequisites.md) section confirmed the organization-level, account-level, and tooling foundations the pattern depends on. This section explains how those pieces fit together: the multi-account topology, the three-environment isolation model, the VPC Lattice building blocks (Resource Gateways and Resource Configurations), and the automatic DNS behavior that makes onboarding a single action. The five implementation phases that follow translate this architecture into deployable Infrastructure as Code (IaC); here the goal is a clear mental model before you deploy anything.
 
-> **A note on conventions.** As in the rest of this guide, all examples use the `us-east-2` Region and placeholder identifiers (organization ID `o-EXAMPLE12345`, account `111111111111`). The reference implementation deploys **three Service Networks**, one each for dev, stage, and prod, named `sn-{env}-shared` (for example `sn-dev-shared`) in both the AWS Cloud Development Kit (CDK) and AWS CloudFormation paths. Throughout this section we refer to them generically, for example, "the dev service network."
+> **A note on conventions.** As in the rest of this guide, all examples use the `us-east-2` Region and placeholder identifiers (organization ID `o-EXAMPLE12345`, account `111111111111`). The reference implementation deploys **three Service Networks**, one each for dev, test, and prod, named `sn-{env}-shared` (for example `sn-dev-shared`) in both the AWS Cloud Development Kit (CDK) and AWS CloudFormation paths. Throughout this section we refer to them generically, for example, "the dev service network."
 
 ## Connectivity patterns landscape: what this guide builds and defers
 
@@ -25,10 +25,10 @@ The pattern concentrates all shared connectivity in one central Network account 
 - **Network account.** The single home for shared connectivity. It contains two VPCs and the three Service Networks:
   - An **Endpoint VPC** that holds the pre-deployed interface VPC endpoints (Systems Manager, STS, Amazon ECR, Amazon ECS, CloudWatch Logs, and others) and a Resource Gateway that exposes them.
   - An **Egress VPC** that holds the centralized Squid forward proxy on Amazon ECS Fargate behind an internal Network Load Balancer (NLB), a NAT Gateway path to the internet, and a second Resource Gateway that exposes the proxy.
-  - Three **Service Networks** (dev, stage, prod), each carrying its own IAM auth policy. The Resource Configurations that front the endpoints and the egress proxy are associated to all three Service Networks, so the same shared connectivity is reachable from every environment, subject to that environment's auth policy and RAM share.
+  - Three **Service Networks** (dev, test, prod), each carrying its own IAM auth policy. The Resource Configurations that front the endpoints and the egress proxy are associated to all three Service Networks, so the same shared connectivity is reachable from every environment, subject to that environment's auth policy and RAM share.
 - **Workload accounts (50, 150, 500, or more).** Each contains one or more workload VPCs. A workload account consumes shared connectivity by associating its VPC to the Service Network for its environment. That single association, with private DNS enabled, is the entire onboarding action.
 
-RAM ties the model together. Each Service Network is shared by RAM **only to the OUs that represent its environment**, with external principals disabled. A workload account in a dev OU receives (and auto-accepts) the share for the dev service network and associates its VPC to that network; it never sees the stage or prod networks. Because sharing is scoped to OUs rather than to the whole Organization, the environment boundary is enforced at the share layer as well as in the IAM auth policy.
+RAM ties the model together. Each Service Network is shared by RAM **only to the OUs that represent its environment**, with external principals disabled. A workload account in a dev OU receives (and auto-accepts) the share for the dev service network and associates its VPC to that network; it never sees the test or prod networks. Because sharing is scoped to OUs rather than to the whole Organization, the environment boundary is enforced at the share layer as well as in the IAM auth policy.
 
 The following diagram shows the topology. The high-resolution renders are exported from the editable draw.io source and embedded in the guide; the inline Mermaid diagram below keeps this section self-contained.
 
@@ -58,7 +58,7 @@ graph TB
             RG2 --> NLB --> SQUID --> NAT
         end
         SN_DEV["Service Network: dev<br/>AuthType AWS_IAM"]
-        SN_STAGE["Service Network: stage<br/>AuthType AWS_IAM"]
+        SN_TEST["Service Network: test<br/>AuthType AWS_IAM"]
         SN_PROD["Service Network: prod<br/>AuthType AWS_IAM"]
     end
 
@@ -67,14 +67,14 @@ graph TB
     end
 
     RAM -.->|shares dev SN to dev OUs| SN_DEV
-    RAM -.->|shares stage SN to stage OUs| SN_STAGE
+    RAM -.->|shares test SN to test OUs| SN_TEST
     RAM -.->|shares prod SN to prod OUs| SN_PROD
 
     RG1 -. Resource Configurations .-> SN_DEV
-    RG1 -. Resource Configurations .-> SN_STAGE
+    RG1 -. Resource Configurations .-> SN_TEST
     RG1 -. Resource Configurations .-> SN_PROD
     RG2 -. squid-proxy-rc .-> SN_DEV
-    RG2 -. squid-proxy-rc .-> SN_STAGE
+    RG2 -. squid-proxy-rc .-> SN_TEST
     RG2 -. squid-proxy-rc .-> SN_PROD
 
     WLVPC -->|associates to its environment SN| SN_DEV
@@ -100,7 +100,7 @@ The second boundary is the RAM share. Each Service Network is shared only to its
 | Service Network auth policy | `AuthType: AWS_IAM` + condition keys `aws:PrincipalOrgID` and `aws:PrincipalOrgPaths` | A principal in one environment's OU invoking through another environment's network |
 | RAM share scope | Share targets only the environment's OU ARNs; `AllowExternalPrincipals: false` | A workload account outside the environment discovering or associating to the network; sharing outside the Organization |
 
-The reference implementation applies the same model to all three networks, with the dev, stage, and prod auth policies differing only in the OU paths they permit. The detailed auth-policy and RAM configuration is covered in [Phase 1: Foundation](04-phase1-foundation.md); the security mapping to the Well-Architected Security pillar is covered in the security and Well-Architected sections.
+The reference implementation applies the same model to all three networks, with the dev, test, and prod auth policies differing only in the OU paths they permit. The detailed auth-policy and RAM configuration is covered in [Phase 1: Foundation](04-phase1-foundation.md); the security mapping to the Well-Architected Security pillar is covered in the security and Well-Architected sections.
 
 ## Resource Gateways and Resource Configurations
 
@@ -130,7 +130,7 @@ A critical implementation detail: the target VPCE DNS names are **not hardcoded*
 - **CDK path** reads each interface endpoint's regional DNS name natively from `vpce.attrDnsEntries` at synthesis time (splitting the `hostedZoneId:dnsName` value), so there is **no Lambda** in the CDK path.
 - **CloudFormation path** uses an inline Python 3.12 Lambda custom resource that calls `ec2:DescribeVpcEndpoints` at deploy time, because YAML cannot split the `attrDnsEntries` value natively.
 
-Every RC is associated to **all three Service Networks** through a `ServiceNetworkResourceAssociation`, so dev, stage, and prod workloads all reach the same shared endpoints and the same egress proxy. The reference implementation exposes **10 endpoint Resource Configurations in the CDK path** (SSM, SSM Messages, EC2 Messages, STS, ECR API, ECR DKR, CloudWatch Logs, ECS, ECS Agent, ECS Telemetry) and an **11th in the CloudFormation path** (`execute-api`), plus the single egress proxy RC.
+Every RC is associated to **all three Service Networks** through a `ServiceNetworkResourceAssociation`, so dev, test, and prod workloads all reach the same shared endpoints and the same egress proxy. The reference implementation exposes **10 endpoint Resource Configurations in the CDK path** (SSM, SSM Messages, EC2 Messages, STS, ECR API, ECR DKR, CloudWatch Logs, ECS, ECS Agent, ECS Telemetry) and an **11th in the CloudFormation path** (`execute-api`), along with the single egress proxy RC.
 
 The relationship between the constructs is hierarchical:
 
@@ -145,7 +145,7 @@ flowchart LR
     end
     RC1 --> SNALL
     RCn --> SNALL
-    SNALL["ServiceNetworkResourceAssociation<br/>to dev + stage + prod Service Networks"]
+    SNALL["ServiceNetworkResourceAssociation<br/>to dev + test + prod Service Networks"]
 ```
 
 | RC attribute | Endpoint RCs | Egress proxy RC |
@@ -155,7 +155,7 @@ flowchart LR
 | `DnsResource` target | VPCE regional DNS (discovered by Lambda) | internal NLB DNS name |
 | `PortRanges` | `443` | `3128` |
 | `Protocol` | `TCP` | `TCP` |
-| Associated to | dev + stage + prod Service Networks | dev + stage + prod Service Networks |
+| Associated to | dev + test + prod Service Networks | dev + test + prod Service Networks |
 
 ## PrivateDnsEnabled behavior and automatic Private Hosted Zone creation
 

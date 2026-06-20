@@ -76,7 +76,7 @@ Each column is a per-account count multiplied by an illustrative hourly rate and
 
 ### VPC Lattice sole fabric: fixed connectivity cost
 
-The sole fabric provisions the billable hourly resources **once** in the Network account: roughly 10-11 shared Resource Configurations exposing the interface endpoints, plus the shared centralized egress path (one shared NAT Gateway behind the Squid proxy). The per-account VPC associations are free. Because each Resource Configuration is associated to the three environment Service Networks, treat the resource count as up to ~30-33 resource-associations as an upper bound when estimating.
+The sole fabric provisions the billable hourly resources **once** in the Network account: roughly 10-11 shared Resource Configurations exposing the interface endpoints, with the shared centralized egress path (one shared NAT Gateway behind the Squid proxy). The per-account VPC associations are free. Because each Resource Configuration is associated to the three environment Service Networks, treat the resource count as up to ~30-33 resource-associations as an upper bound when estimating.
 
 | Estate size | Shared Resource Configurations (flat) | Shared egress fixed components | Per-account associations | Lattice fixed total (illustrative) |
 |-------------|----------------------------------------|--------------------------------|--------------------------|-------------------------------------|
@@ -141,7 +141,7 @@ To produce authoritative figures for a business case:
 1. Take the deterministic resource counts from [Targeted Business Outcomes](01-business-outcomes.md) for your account count and AZ strategy.
 2. Enter them into the [AWS Pricing Calculator](https://calculator.aws/) for your Region, using the official [VPC Lattice](https://aws.amazon.com/vpc/lattice/pricing/), [Transit Gateway](https://aws.amazon.com/transit-gateway/pricing/), and [VPC / PrivateLink](https://aws.amazon.com/vpc/pricing/) pricing pages.
 3. Add your own traffic estimate for the per-GB layer.
-4. Compare the fixed-plus-variable totals, not the fixed layer alone.
+4. Compare the total of the fixed and variable costs, not the fixed layer alone.
 
 ## Summary
 

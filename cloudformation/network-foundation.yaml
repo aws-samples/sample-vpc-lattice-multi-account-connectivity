@@ -1,11 +1,13 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
-  Network account foundation for the APG VPC Lattice reference architecture.
-  Creates two dedicated VPCs spanning three Availability Zones each — the
-  Endpoint VPC for interface VPC endpoints + the endpoint Resource Gateway,
-  and the Egress VPC for the Squid Fargate service + the egress Resource
-  Gateway — and publishes every identifier the Lattice Core, Endpoints, and
-  Squid templates consume to SSM under /apg-lattice/.
+  Network account foundation for the VPC Lattice reference architecture.
+  Creates three dedicated VPCs, each spanning three Availability Zones with
+  /22 subnets: the Endpoint VPC, which hosts the interface VPC endpoints along
+  with the endpoint Resource Gateway; the Egress VPC, which hosts the Squid
+  Fargate service along with the egress Resource Gateway; and the Ingress VPC,
+  which hosts the Service Network VPC Endpoints (SN-E) for Phase 5 ingress. It
+  publishes every identifier the Lattice Core, Endpoints, and Squid templates
+  consume to SSM under <SsmPrefix>/.
 
   CloudFormation equivalent of the CDK NetworkFoundationStack. Deploy this
   first in the Network account before deploying vpc-lattice-resource-gateways.yaml
@@ -19,6 +21,7 @@ Metadata:
         Parameters:
           - EndpointVpcCidr
           - EgressVpcCidr
+          - IngressVpcCidr
       - Label:
           default: VPC Lattice integration
         Parameters:
@@ -27,19 +30,26 @@ Metadata:
           default: SSM parameter namespace
         Parameters:
           - SsmPrefix
+          - ResourcePrefix
 
 Parameters:
   EndpointVpcCidr:
     Type: String
-    Default: 10.80.0.0/16
+    Default: 10.5.0.0/16
     AllowedPattern: '^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$'
-    Description: IPv4 CIDR block for the Endpoint VPC (interface endpoints + endpoint Resource Gateway). Must not overlap with workload VPCs.
+    Description: IPv4 CIDR block for the Endpoint VPC (interface endpoints and the endpoint Resource Gateway). Must not overlap with workload VPCs.
 
   EgressVpcCidr:
     Type: String
-    Default: 10.81.0.0/16
+    Default: 10.6.0.0/16
     AllowedPattern: '^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$'
-    Description: IPv4 CIDR block for the Egress VPC (NAT GW + Squid Fargate + egress Resource Gateway). Must not overlap with workload VPCs.
+    Description: IPv4 CIDR block for the Egress VPC (NAT gateways, the Squid Fargate service, and the egress Resource Gateway). Must not overlap with workload VPCs.
+
+  IngressVpcCidr:
+    Type: String
+    Default: 10.8.0.0/16
+    AllowedPattern: '^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$'
+    Description: IPv4 CIDR block for the Ingress VPC (home of the Service Network VPC Endpoint for Phase 5 ingress). Must not overlap with the other VPCs.
 
   LatticePrefixListId:
     Type: String
@@ -48,13 +58,19 @@ Parameters:
     Description: >
       VPC Lattice managed prefix list ID for this region (com.amazonaws.<region>.vpc-lattice).
       When set, the endpoint and egress security groups allow ingress from the Lattice data plane.
-      Leave empty to skip — you can add the rule later once you know the prefix list ID for the region.
+      Leave empty to skip: you can add the rule later once you know the prefix list ID for the region.
 
   SsmPrefix:
     Type: String
-    Default: /apg-lattice
+    Default: /netfabric
     AllowedPattern: '^/[a-zA-Z0-9/_.-]+[^/]$'
-    Description: SSM parameter namespace under which all foundation identifiers are published. The Lattice Core, Endpoints, and Squid templates default to /apg-lattice/.
+    Description: SSM parameter namespace under which all foundation identifiers are published. The Lattice Core, Endpoints, and Squid templates default to /netfabric/.
+
+  ResourcePrefix:
+    Type: String
+    Default: netfabric
+    AllowedPattern: '^[a-z][a-z0-9-]{1,30}[a-z0-9]$'
+    Description: Single token that namespaces every resource Name tag and flow-log group. Keep consistent with SsmPrefix (default netfabric / /netfabric).
 
 Conditions:
   HasLatticePrefixList: !Not [!Equals [!Ref LatticePrefixListId, '']]
@@ -67,7 +83,7 @@ Resources:
   LogsKmsKey:
     Type: AWS::KMS::Key
     Properties:
-      Description: CMK for APG Lattice network-account CloudWatch log groups
+      Description: CMK for Network fabric network-account CloudWatch log groups
       EnableKeyRotation: true
       KeyPolicy:
         Version: '2012-10-17'
@@ -104,12 +120,12 @@ Resources:
       EnableDnsHostnames: true
       Tags:
         - Key: Name
-          Value: apg-lattice-endpoint-vpc
+          Value: !Sub '${ResourcePrefix}-endpoint-vpc'
 
   EndpointVpcFlowLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub /apg-lattice/network/endpoint-vpc/flow-logs/${AWS::StackName}
+      LogGroupName: !Sub ${SsmPrefix}/network/endpoint-vpc/flow-logs/${AWS::StackName}
       RetentionInDays: 30
       KmsKeyId: !GetAtt LogsKmsKey.Arn
 
@@ -155,33 +171,33 @@ Resources:
     Properties:
       VpcId: !Ref EndpointVpc
       AvailabilityZone: !Sub ${AWS::Region}a
-      CidrBlock: !Select [0, !Cidr [!GetAtt EndpointVpc.CidrBlock, 3, 8]]
+      CidrBlock: !Select [0, !Cidr [!GetAtt EndpointVpc.CidrBlock, 3, 10]]
       MapPublicIpOnLaunch: false
       Tags:
         - Key: Name
-          Value: apg-lattice-endpoint-vpc/endpointSubnetA
+          Value: !Sub '${ResourcePrefix}-endpoint-vpc/endpointSubnetA'
 
   EndpointSubnetB:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref EndpointVpc
       AvailabilityZone: !Sub ${AWS::Region}b
-      CidrBlock: !Select [1, !Cidr [!GetAtt EndpointVpc.CidrBlock, 3, 8]]
+      CidrBlock: !Select [1, !Cidr [!GetAtt EndpointVpc.CidrBlock, 3, 10]]
       MapPublicIpOnLaunch: false
       Tags:
         - Key: Name
-          Value: apg-lattice-endpoint-vpc/endpointSubnetB
+          Value: !Sub '${ResourcePrefix}-endpoint-vpc/endpointSubnetB'
 
   EndpointSubnetC:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref EndpointVpc
       AvailabilityZone: !Sub ${AWS::Region}c
-      CidrBlock: !Select [2, !Cidr [!GetAtt EndpointVpc.CidrBlock, 3, 8]]
+      CidrBlock: !Select [2, !Cidr [!GetAtt EndpointVpc.CidrBlock, 3, 10]]
       MapPublicIpOnLaunch: false
       Tags:
         - Key: Name
-          Value: apg-lattice-endpoint-vpc/endpointSubnetC
+          Value: !Sub '${ResourcePrefix}-endpoint-vpc/endpointSubnetC'
 
   EndpointRouteTable:
     Type: AWS::EC2::RouteTable
@@ -189,7 +205,7 @@ Resources:
       VpcId: !Ref EndpointVpc
       Tags:
         - Key: Name
-          Value: apg-lattice-endpoint-vpc/endpointRouteTable
+          Value: !Sub '${ResourcePrefix}-endpoint-vpc/endpointRouteTable'
 
   EndpointSubnetARouteAssoc:
     Type: AWS::EC2::SubnetRouteTableAssociation
@@ -229,7 +245,7 @@ Resources:
           Description: HTTPS to the interface VPC endpoints within the Endpoint VPC
       Tags:
         - Key: Name
-          Value: apg-lattice-endpoint-rg-sg
+          Value: !Sub '${ResourcePrefix}-endpoint-rg-sg'
 
   # Add the Lattice managed prefix list ingress rule only when the parameter is set.
   # AWS::EC2::SecurityGroupIngress with SourcePrefixListId is the supported way
@@ -374,12 +390,12 @@ Resources:
       EnableDnsHostnames: true
       Tags:
         - Key: Name
-          Value: apg-lattice-egress-vpc
+          Value: !Sub '${ResourcePrefix}-egress-vpc'
 
   EgressVpcFlowLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub /apg-lattice/network/egress-vpc/flow-logs/${AWS::StackName}
+      LogGroupName: !Sub ${SsmPrefix}/network/egress-vpc/flow-logs/${AWS::StackName}
       RetentionInDays: 30
       KmsKeyId: !GetAtt LogsKmsKey.Arn
 
@@ -425,7 +441,7 @@ Resources:
     Properties:
       Tags:
         - Key: Name
-          Value: apg-lattice-egress-vpc/IGW
+          Value: !Sub '${ResourcePrefix}-egress-vpc/IGW'
 
   EgressIgwAttach:
     Type: AWS::EC2::VPCGatewayAttachment
@@ -438,66 +454,66 @@ Resources:
     Properties:
       VpcId: !Ref EgressVpc
       AvailabilityZone: !Sub ${AWS::Region}a
-      CidrBlock: !Select [0, !Cidr [!GetAtt EgressVpc.CidrBlock, 6, 8]]
+      CidrBlock: !Select [0, !Cidr [!GetAtt EgressVpc.CidrBlock, 6, 10]]
       MapPublicIpOnLaunch: false
       Tags:
         - Key: Name
-          Value: apg-lattice-egress-vpc/publicSubnetA
+          Value: !Sub '${ResourcePrefix}-egress-vpc/publicSubnetA'
 
   EgressPublicSubnetB:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref EgressVpc
       AvailabilityZone: !Sub ${AWS::Region}b
-      CidrBlock: !Select [1, !Cidr [!GetAtt EgressVpc.CidrBlock, 6, 8]]
+      CidrBlock: !Select [1, !Cidr [!GetAtt EgressVpc.CidrBlock, 6, 10]]
       MapPublicIpOnLaunch: false
       Tags:
         - Key: Name
-          Value: apg-lattice-egress-vpc/publicSubnetB
+          Value: !Sub '${ResourcePrefix}-egress-vpc/publicSubnetB'
 
   EgressPublicSubnetC:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref EgressVpc
       AvailabilityZone: !Sub ${AWS::Region}c
-      CidrBlock: !Select [2, !Cidr [!GetAtt EgressVpc.CidrBlock, 6, 8]]
+      CidrBlock: !Select [2, !Cidr [!GetAtt EgressVpc.CidrBlock, 6, 10]]
       MapPublicIpOnLaunch: false
       Tags:
         - Key: Name
-          Value: apg-lattice-egress-vpc/publicSubnetC
+          Value: !Sub '${ResourcePrefix}-egress-vpc/publicSubnetC'
 
   EgressPrivateSubnetA:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref EgressVpc
       AvailabilityZone: !Sub ${AWS::Region}a
-      CidrBlock: !Select [3, !Cidr [!GetAtt EgressVpc.CidrBlock, 6, 8]]
+      CidrBlock: !Select [3, !Cidr [!GetAtt EgressVpc.CidrBlock, 6, 10]]
       MapPublicIpOnLaunch: false
       Tags:
         - Key: Name
-          Value: apg-lattice-egress-vpc/privateSubnetA
+          Value: !Sub '${ResourcePrefix}-egress-vpc/privateSubnetA'
 
   EgressPrivateSubnetB:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref EgressVpc
       AvailabilityZone: !Sub ${AWS::Region}b
-      CidrBlock: !Select [4, !Cidr [!GetAtt EgressVpc.CidrBlock, 6, 8]]
+      CidrBlock: !Select [4, !Cidr [!GetAtt EgressVpc.CidrBlock, 6, 10]]
       MapPublicIpOnLaunch: false
       Tags:
         - Key: Name
-          Value: apg-lattice-egress-vpc/privateSubnetB
+          Value: !Sub '${ResourcePrefix}-egress-vpc/privateSubnetB'
 
   EgressPrivateSubnetC:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref EgressVpc
       AvailabilityZone: !Sub ${AWS::Region}c
-      CidrBlock: !Select [5, !Cidr [!GetAtt EgressVpc.CidrBlock, 6, 8]]
+      CidrBlock: !Select [5, !Cidr [!GetAtt EgressVpc.CidrBlock, 6, 10]]
       MapPublicIpOnLaunch: false
       Tags:
         - Key: Name
-          Value: apg-lattice-egress-vpc/privateSubnetC
+          Value: !Sub '${ResourcePrefix}-egress-vpc/privateSubnetC'
 
   EgressPublicRouteTable:
     Type: AWS::EC2::RouteTable
@@ -505,7 +521,7 @@ Resources:
       VpcId: !Ref EgressVpc
       Tags:
         - Key: Name
-          Value: apg-lattice-egress-vpc/publicRouteTable
+          Value: !Sub '${ResourcePrefix}-egress-vpc/publicRouteTable'
 
   EgressPublicDefaultRoute:
     Type: AWS::EC2::Route
@@ -531,55 +547,115 @@ Resources:
       SubnetId: !Ref EgressPublicSubnetC
       RouteTableId: !Ref EgressPublicRouteTable
 
-  # Single NAT GW for the reference lab (raise to one per AZ for production HA).
-  EgressNatEip:
+  # One NAT gateway per AZ (Well-Architected Reliability). Each private subnet
+  # routes to the NAT gateway in its own AZ, so a single AZ failure does not
+  # sever egress for the others. Reduce to a single NAT for a cost-sensitive lab.
+  EgressNatEipA:
     Type: AWS::EC2::EIP
     DependsOn: EgressIgwAttach
     Properties:
       Domain: vpc
       Tags:
         - Key: Name
-          Value: apg-lattice-egress-vpc/natEip
+          Value: !Sub '${ResourcePrefix}-egress-vpc/natEipA'
+  EgressNatEipB:
+    Type: AWS::EC2::EIP
+    DependsOn: EgressIgwAttach
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${ResourcePrefix}-egress-vpc/natEipB'
+  EgressNatEipC:
+    Type: AWS::EC2::EIP
+    DependsOn: EgressIgwAttach
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${ResourcePrefix}-egress-vpc/natEipC'
 
-  EgressNatGateway:
+  EgressNatGatewayA:
     Type: AWS::EC2::NatGateway
     Properties:
-      AllocationId: !GetAtt EgressNatEip.AllocationId
+      AllocationId: !GetAtt EgressNatEipA.AllocationId
       SubnetId: !Ref EgressPublicSubnetA
       Tags:
         - Key: Name
-          Value: apg-lattice-egress-vpc/natGateway
+          Value: !Sub '${ResourcePrefix}-egress-vpc/natGatewayA'
+  EgressNatGatewayB:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt EgressNatEipB.AllocationId
+      SubnetId: !Ref EgressPublicSubnetB
+      Tags:
+        - Key: Name
+          Value: !Sub '${ResourcePrefix}-egress-vpc/natGatewayB'
+  EgressNatGatewayC:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt EgressNatEipC.AllocationId
+      SubnetId: !Ref EgressPublicSubnetC
+      Tags:
+        - Key: Name
+          Value: !Sub '${ResourcePrefix}-egress-vpc/natGatewayC'
 
-  EgressPrivateRouteTable:
+  EgressPrivateRouteTableA:
     Type: AWS::EC2::RouteTable
     Properties:
       VpcId: !Ref EgressVpc
       Tags:
         - Key: Name
-          Value: apg-lattice-egress-vpc/privateRouteTable
+          Value: !Sub '${ResourcePrefix}-egress-vpc/privateRouteTableA'
+  EgressPrivateRouteTableB:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref EgressVpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${ResourcePrefix}-egress-vpc/privateRouteTableB'
+  EgressPrivateRouteTableC:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref EgressVpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${ResourcePrefix}-egress-vpc/privateRouteTableC'
 
-  EgressPrivateDefaultRoute:
+  EgressPrivateDefaultRouteA:
     Type: AWS::EC2::Route
     Properties:
-      RouteTableId: !Ref EgressPrivateRouteTable
+      RouteTableId: !Ref EgressPrivateRouteTableA
       DestinationCidrBlock: 0.0.0.0/0
-      NatGatewayId: !Ref EgressNatGateway
+      NatGatewayId: !Ref EgressNatGatewayA
+  EgressPrivateDefaultRouteB:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref EgressPrivateRouteTableB
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref EgressNatGatewayB
+  EgressPrivateDefaultRouteC:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref EgressPrivateRouteTableC
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref EgressNatGatewayC
 
   EgressPrivateSubnetARouteAssoc:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       SubnetId: !Ref EgressPrivateSubnetA
-      RouteTableId: !Ref EgressPrivateRouteTable
+      RouteTableId: !Ref EgressPrivateRouteTableA
   EgressPrivateSubnetBRouteAssoc:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       SubnetId: !Ref EgressPrivateSubnetB
-      RouteTableId: !Ref EgressPrivateRouteTable
+      RouteTableId: !Ref EgressPrivateRouteTableB
   EgressPrivateSubnetCRouteAssoc:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       SubnetId: !Ref EgressPrivateSubnetC
-      RouteTableId: !Ref EgressPrivateRouteTable
+      RouteTableId: !Ref EgressPrivateRouteTableC
 
   EgressRgSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -601,7 +677,7 @@ Resources:
           Description: Proxy port to the internal NLB / Squid tasks within the Egress VPC
       Tags:
         - Key: Name
-          Value: apg-lattice-egress-rg-sg
+          Value: !Sub '${ResourcePrefix}-egress-rg-sg'
 
   EgressRgSgLatticeIngress:
     Type: AWS::EC2::SecurityGroupIngress
@@ -615,8 +691,128 @@ Resources:
       Description: Squid proxy port from the VPC Lattice data plane (managed prefix list)
 
   # ============================================================
-  # SSM parameter contract — every identifier the Lattice templates consume
+  # SSM parameter contract: every identifier the Lattice templates consume
   # ============================================================
+
+  # ============================================================
+  # Ingress VPC: 3 AZs, isolated subnets (no NAT), flow logs.
+  # Home for the Service Network VPC Endpoint (SN-E) that fronts external,
+  # on-premises, and cross-Region consumers (Phase 5). Attach your Direct
+  # Connect, VPN, Transit Gateway, or Cloud WAN reach to this VPC; that
+  # attachment is consumer-specific and out of scope for this guide.
+  # ============================================================
+  IngressVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref IngressVpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ResourcePrefix}-ingress-vpc'
+
+  IngressVpcFlowLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub ${SsmPrefix}/network/ingress-vpc/flow-logs/${AWS::StackName}
+      RetentionInDays: 30
+      KmsKeyId: !GetAtt LogsKmsKey.Arn
+
+  IngressVpcFlowLogManagedPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Allows the Ingress VPC flow-log role to publish to its log group
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+              - logs:DescribeLogStreams
+            Resource: !GetAtt IngressVpcFlowLogGroup.Arn
+
+  IngressVpcFlowLogRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: vpc-flow-logs.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref IngressVpcFlowLogManagedPolicy
+
+  IngressVpcFlowLog:
+    Type: AWS::EC2::FlowLog
+    Properties:
+      ResourceType: VPC
+      ResourceId: !Ref IngressVpc
+      TrafficType: ALL
+      LogDestinationType: cloud-watch-logs
+      LogGroupName: !Ref IngressVpcFlowLogGroup
+      DeliverLogsPermissionArn: !GetAtt IngressVpcFlowLogRole.Arn
+
+  IngressSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref IngressVpc
+      AvailabilityZone: !Sub ${AWS::Region}a
+      CidrBlock: !Select [0, !Cidr [!GetAtt IngressVpc.CidrBlock, 3, 10]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${ResourcePrefix}-ingress-vpc/ingressSubnetA'
+
+  IngressSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref IngressVpc
+      AvailabilityZone: !Sub ${AWS::Region}b
+      CidrBlock: !Select [1, !Cidr [!GetAtt IngressVpc.CidrBlock, 3, 10]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${ResourcePrefix}-ingress-vpc/ingressSubnetB'
+
+  IngressSubnetC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref IngressVpc
+      AvailabilityZone: !Sub ${AWS::Region}c
+      CidrBlock: !Select [2, !Cidr [!GetAtt IngressVpc.CidrBlock, 3, 10]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${ResourcePrefix}-ingress-vpc/ingressSubnetC'
+
+  IngressRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref IngressVpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${ResourcePrefix}-ingress-vpc/ingressRouteTable'
+
+  IngressSubnetARouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref IngressSubnetA
+      RouteTableId: !Ref IngressRouteTable
+
+  IngressSubnetBRouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref IngressSubnetB
+      RouteTableId: !Ref IngressRouteTable
+
+  IngressSubnetCRouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref IngressSubnetC
+      RouteTableId: !Ref IngressRouteTable
 
   # Endpoint VPC
   EndpointVpcIdParam:
@@ -625,42 +821,42 @@ Resources:
       Name: !Sub ${SsmPrefix}/network/endpoint-vpc/id
       Type: String
       Value: !Ref EndpointVpc
-      Description: APG Lattice Endpoint VPC ID
+      Description: Network fabric Endpoint VPC ID
   EndpointVpcCidrParam:
     Type: AWS::SSM::Parameter
     Properties:
       Name: !Sub ${SsmPrefix}/network/endpoint-vpc/cidr
       Type: String
       Value: !GetAtt EndpointVpc.CidrBlock
-      Description: APG Lattice Endpoint VPC CIDR
+      Description: Network fabric Endpoint VPC CIDR
   EndpointSubnetAIdParam:
     Type: AWS::SSM::Parameter
     Properties:
       Name: !Sub ${SsmPrefix}/network/endpoint-vpc/subnet/a/id
       Type: String
       Value: !Ref EndpointSubnetA
-      Description: APG Lattice Endpoint VPC Resource Gateway subnet a
+      Description: Network fabric Endpoint VPC Resource Gateway subnet a
   EndpointSubnetBIdParam:
     Type: AWS::SSM::Parameter
     Properties:
       Name: !Sub ${SsmPrefix}/network/endpoint-vpc/subnet/b/id
       Type: String
       Value: !Ref EndpointSubnetB
-      Description: APG Lattice Endpoint VPC Resource Gateway subnet b
+      Description: Network fabric Endpoint VPC Resource Gateway subnet b
   EndpointSubnetCIdParam:
     Type: AWS::SSM::Parameter
     Properties:
       Name: !Sub ${SsmPrefix}/network/endpoint-vpc/subnet/c/id
       Type: String
       Value: !Ref EndpointSubnetC
-      Description: APG Lattice Endpoint VPC Resource Gateway subnet c
+      Description: Network fabric Endpoint VPC Resource Gateway subnet c
   EndpointRgSgIdParam:
     Type: AWS::SSM::Parameter
     Properties:
       Name: !Sub ${SsmPrefix}/network/endpoint-vpc/sg/rg/id
       Type: String
       Value: !GetAtt EndpointRgSecurityGroup.GroupId
-      Description: APG Lattice Endpoint Resource Gateway SG
+      Description: Network fabric Endpoint Resource Gateway SG
 
   # Egress VPC
   EgressVpcIdParam:
@@ -669,42 +865,79 @@ Resources:
       Name: !Sub ${SsmPrefix}/network/egress-vpc/id
       Type: String
       Value: !Ref EgressVpc
-      Description: APG Lattice Egress VPC ID
+      Description: Network fabric Egress VPC ID
   EgressVpcCidrParam:
     Type: AWS::SSM::Parameter
     Properties:
       Name: !Sub ${SsmPrefix}/network/egress-vpc/cidr/ipv4
       Type: String
       Value: !GetAtt EgressVpc.CidrBlock
-      Description: APG Lattice Egress VPC CIDR (IPv4)
+      Description: Network fabric Egress VPC CIDR (IPv4)
   EgressSubnetAIdParam:
     Type: AWS::SSM::Parameter
     Properties:
       Name: !Sub ${SsmPrefix}/network/egress-vpc/subnet/a/id
       Type: String
       Value: !Ref EgressPrivateSubnetA
-      Description: APG Lattice Egress VPC private subnet a
+      Description: Network fabric Egress VPC private subnet a
   EgressSubnetBIdParam:
     Type: AWS::SSM::Parameter
     Properties:
       Name: !Sub ${SsmPrefix}/network/egress-vpc/subnet/b/id
       Type: String
       Value: !Ref EgressPrivateSubnetB
-      Description: APG Lattice Egress VPC private subnet b
+      Description: Network fabric Egress VPC private subnet b
   EgressSubnetCIdParam:
     Type: AWS::SSM::Parameter
     Properties:
       Name: !Sub ${SsmPrefix}/network/egress-vpc/subnet/c/id
       Type: String
       Value: !Ref EgressPrivateSubnetC
-      Description: APG Lattice Egress VPC private subnet c
+      Description: Network fabric Egress VPC private subnet c
   EgressRgSgIdParam:
     Type: AWS::SSM::Parameter
     Properties:
       Name: !Sub ${SsmPrefix}/network/egress-vpc/sg/rg/id
       Type: String
       Value: !GetAtt EgressRgSecurityGroup.GroupId
-      Description: APG Lattice Egress Resource Gateway SG
+      Description: Network fabric Egress Resource Gateway SG
+
+  # Ingress VPC
+  IngressVpcIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub ${SsmPrefix}/network/ingress-vpc/id
+      Type: String
+      Value: !Ref IngressVpc
+      Description: Network fabric Ingress VPC ID
+  IngressVpcCidrParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub ${SsmPrefix}/network/ingress-vpc/cidr
+      Type: String
+      Value: !GetAtt IngressVpc.CidrBlock
+      Description: Network fabric Ingress VPC CIDR
+  IngressSubnetAIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub ${SsmPrefix}/network/ingress-vpc/subnet/a/id
+      Type: String
+      Value: !Ref IngressSubnetA
+      Description: Network fabric Ingress VPC SN-E subnet a
+  IngressSubnetBIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub ${SsmPrefix}/network/ingress-vpc/subnet/b/id
+      Type: String
+      Value: !Ref IngressSubnetB
+      Description: Network fabric Ingress VPC SN-E subnet b
+  IngressSubnetCIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub ${SsmPrefix}/network/ingress-vpc/subnet/c/id
+      Type: String
+      Value: !Ref IngressSubnetC
+      Description: Network fabric Ingress VPC SN-E subnet c
 
 Outputs:
   EndpointVpcId:
@@ -725,3 +958,9 @@ Outputs:
   EgressRgSecurityGroupId:
     Description: Egress Resource Gateway security group ID
     Value: !GetAtt EgressRgSecurityGroup.GroupId
+  IngressVpcId:
+    Description: Ingress VPC ID (home of the Service Network VPC Endpoint)
+    Value: !Ref IngressVpc
+  IngressSubnetIds:
+    Description: Comma-separated Ingress VPC SN-E subnet IDs (a,b,c)
+    Value: !Sub ${IngressSubnetA},${IngressSubnetB},${IngressSubnetC}

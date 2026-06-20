@@ -1,6 +1,6 @@
 # Phase 2: Shared Endpoints
 
-[Phase 1: Foundation](04-phase1-foundation.md) created the three Service Networks, attached their OU-scoped IAM auth policies, and configured the RAM shares, the bottom of the stack that everything else attaches to. This phase builds the first thing that attaches to those networks: the shared AWS service endpoints. It deploys a **Resource Gateway** into the Endpoint VPC and a **Resource Configuration** for each interface VPC endpoint, then associates every Resource Configuration to all three Service Networks so dev, stage, and prod workloads reach the same shared endpoints.
+[Phase 1: Foundation](04-phase1-foundation.md) created the three Service Networks, attached their OU-scoped IAM auth policies, and configured the RAM shares, the bottom of the stack that everything else attaches to. This phase builds the first thing that attaches to those networks: the shared AWS service endpoints. It deploys a **Resource Gateway** into the Endpoint VPC and a **Resource Configuration** for each interface VPC endpoint, then associates every Resource Configuration to all three Service Networks so dev, test, and prod workloads reach the same shared endpoints.
 
 This is the phase that turns "a handful of interface endpoints in one VPC" into "every workload account can resolve and reach `ssm.us-east-2.amazonaws.com` privately, with no per-account endpoint." The mechanism that makes it self-healing, a Lambda custom resource that discovers each endpoint's regional DNS name at deploy time, is also introduced here.
 
@@ -12,7 +12,7 @@ This phase depends on Phase 1 for one concrete reason: **every Resource Configur
 
 In the CDK path the dependency is explicit and enforced by the framework:
 
-- `VpcLatticeCoreStack` (Phase 1) exports `serviceNetworkIds` for dev, stage, and prod.
+- `VpcLatticeCoreStack` (Phase 1) exports `serviceNetworkIds` for dev, test, and prod.
 - `VpcLatticeEndpointsStack` (this phase) consumes those IDs through its `serviceNetworkIds` prop and declares `addDependency(coreStack)`, so CloudFormation will not deploy the endpoints stack until the core stack is complete.
 
 In the CloudFormation path the two phases live in the **same combined template** (`vpc-lattice-resource-gateways.yaml`), so the Service Networks and the endpoint resources are created in a single deployment, with intra-template `!GetAtt` references handling the ordering. If you want a strict phase-by-phase rollout that mirrors this guide, the CDK split maps more cleanly; the combined template is the convenient single-deploy alternative.
@@ -33,11 +33,11 @@ Everything in this phase deploys to the Network account, specifically into the E
 
 The global prerequisites in [Prerequisites](02-prerequisites.md) must be satisfied. The items below are the ones this phase depends on directly:
 
-- [ ] **Phase 1 is complete**, and the three Service Network IDs are available, as CDK stack outputs (`ServiceNetworkDevId`, `ServiceNetworkStageId`, `ServiceNetworkProdId`) on the CDK path, or created in the same template on the CloudFormation path.
-- [ ] **The Endpoint VPC, two Resource Gateway subnets, and the Resource Gateway security group exist**, and their IDs are published to the `/apg-lattice/network/...` SSM paths (or your equivalent if you re-pointed the IaC to a different prefix such as LZA's `/accelerator/network/...`). The IaC resolves these at deploy time rather than hardcoding them.
+- [ ] **Phase 1 is complete**, and the three Service Network IDs are available, as CDK stack outputs (`ServiceNetworkDevId`, `ServiceNetworkTestId`, `ServiceNetworkProdId`) on the CDK path, or created in the same template on the CloudFormation path.
+- [ ] **The Endpoint VPC, two Resource Gateway subnets, and the Resource Gateway security group exist**, and their IDs are published to the `/netfabric/network/...` SSM paths (or your equivalent if you re-pointed the IaC to a different prefix such as LZA's `/accelerator/network/...`). The IaC resolves these at deploy time rather than hardcoding them.
 - [ ] **Resource Gateway subnets are a minimum of /24.** The Resource Gateway provisions elastic network interfaces (ENIs) in these subnets and scales them with connection volume; undersized subnets risk IP exhaustion and intermittent failures. (See [subnet sizing](02-prerequisites.md#3-subnet-sizing-requirements); this is requirement 9.3.)
 - [ ] **The interface VPC endpoints already exist in the Endpoint VPC.** The Lambda custom resource discovers them at deploy time, it does not create them. The implementation expects the 10 endpoints listed below (11 on the CloudFormation path).
-- [ ] **Deployment IAM capability in the Network account** to create VPC Lattice Resource Gateways, Resource Configurations, and Service Network associations; to create the Lambda custom resource and its role; and to read the `/apg-lattice/network/...` SSM parameters (or your equivalent SSM prefix). (CDK path additionally requires `cdk bootstrap`.)
+- [ ] **Deployment IAM capability in the Network account** to create VPC Lattice Resource Gateways, Resource Configurations, and Service Network associations; to create the Lambda custom resource and its role; and to read the `/netfabric/network/...` SSM parameters (or your equivalent SSM prefix). (CDK path additionally requires `cdk bootstrap`.)
 
 ## Step 1, Deploy the Resource Gateway in the Endpoint VPC
 
@@ -211,7 +211,7 @@ for (const ep of endpoints) {
 }
 ```
 
-### The 10 endpoints (CDK), plus an 11th in CloudFormation
+### The 10 endpoints (CDK), with an 11th in CloudFormation
 
 | # | Endpoint (`name`) | Service domain pattern (`{domain}.us-east-2.amazonaws.com`) | Normalized service key (CFN Lambda map key) |
 |---|-------------------|-------------------------------------------------------------|------------------------|
@@ -245,7 +245,7 @@ The two IaC paths arrive at the same wiring through different mechanisms, but th
 
 **Both paths are functionally equivalent for the workload-facing behavior.** The CDK path is simpler because it does not require a Lambda; the CloudFormation path needs the Lambda only because YAML cannot split `attrDnsEntries` natively. Choose the path that fits your IaC tooling, the runtime DNS resolution behavior, the `PrivateDnsEnabled` semantics, and the self-healing properties are the same.
 
-The CloudFormation RC-plus-association shape, for one endpoint:
+The CloudFormation RC + association shape, for one endpoint:
 
 ```yaml
 # cloudformation/vpc-lattice-resource-gateways.yaml
@@ -270,7 +270,7 @@ SsmSNAssocDev:
     ServiceNetworkId: !GetAtt DevServiceNetwork.Id
     ResourceConfigurationId: !GetAtt SsmResourceConfig.Id
     PrivateDnsEnabled: true
-# ...SsmSNAssocStage and SsmSNAssocProd repeat for the stage and prod Service Networks
+# ...SsmSNAssocTest and SsmSNAssocProd repeat for the test and prod Service Networks
 ```
 
 ### How this ties into the DNS resolution path
@@ -291,7 +291,7 @@ endpointVpcSsmPath: string;       // SSM path to the Endpoint VPC ID
 endpointSubnetASsmPath: string;   // SSM path to Resource Gateway subnet A
 endpointSubnetBSsmPath: string;   // SSM path to Resource Gateway subnet B
 endpointSgSsmPath: string;        // SSM path to the Resource Gateway security group
-serviceNetworkIds: { dev: string; stage: string; prod: string };  // from VpcLatticeCoreStack
+serviceNetworkIds: { dev: string; test: string; prod: string };  // from VpcLatticeCoreStack
 ```
 
 The stack declares `addDependency(coreStack)`, so the core stack (Phase 1) must deploy first. Deploy this phase with:
@@ -313,7 +313,7 @@ After this phase completes, the Network account's Endpoint VPC contains: (this a
 
 - **One endpoint Resource Gateway** (`endpoint-resource-gateway` in CDK / `endpoint-resource-gw` in CloudFormation), healthy and active, with ENIs in the two Resource Gateway subnets.
 - **10 Resource Configurations** on the CDK path (`11` on the CloudFormation path, including `execute-api`), each of type `SINGLE`, on port `443`/`TCP`.
-- **A `ServiceNetworkResourceAssociation` for every RC to each of the three Service Networks**, with `PrivateDnsEnabled: true`, so dev, stage, and prod all reach the same shared endpoints.
+- **A `ServiceNetworkResourceAssociation` for every RC to each of the three Service Networks**, with `PrivateDnsEnabled: true`, so dev, test, and prod all reach the same shared endpoints.
 - **Each RC's `DnsResource.DomainName` is the interface endpoint's regional VPCE DNS name**, resolved natively from `attrDnsEntries` (CDK) or by the inline Lambda's `DescribeVpcEndpoints` call (CloudFormation).
 
 ### Verification
@@ -343,7 +343,7 @@ aws logs tail /aws/lambda/<stack-name>-vpce-dns-lookup --region us-east-2
 Also check, in the console:
 
 - **VPC Lattice → Resource gateways**: the endpoint Resource Gateway listed as **Active**, in the Endpoint VPC, across two subnets.
-- **VPC Lattice → Resource configurations**: 10 (CDK) or 11 (CloudFormation) configurations, each on port 443/TCP, each associated to the dev, stage, and prod Service Networks with `PrivateDnsEnabled: true`.
+- **VPC Lattice → Resource configurations**: 10 (CDK) or 11 (CloudFormation) configurations, each on port 443/TCP, each associated to the dev, test, and prod Service Networks with `PrivateDnsEnabled: true`.
 - **CloudFormation path only, CloudWatch → Log groups → `/aws/lambda/<stack-name>-vpce-dns-lookup`**: a recent invocation logging `Found endpoint: <service> -> <vpce-dns-name>` lines and a `Total endpoints discovered` count.
 
 If the Resource Gateway is stuck or unhealthy, the most common cause is subnet IP exhaustion, confirm the Resource Gateway subnets are /24 or larger, as the prerequisites require. On the CloudFormation path, if the Lambda returned fewer endpoints than expected, confirm all interface endpoints exist in the Endpoint VPC and are of type `Interface`; the lookup filters on both `vpc-id` and `vpc-endpoint-type=Interface`. On the CDK path, each Resource Configuration is wired directly to its endpoint's `attrDnsEntries`, so the same diagnosis is "is the endpoint healthy in the Endpoint VPC?"

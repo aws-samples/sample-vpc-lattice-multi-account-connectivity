@@ -9,12 +9,14 @@ import { NagSuppressions } from 'cdk-nag';
 import { Construct } from 'constructs';
 
 export interface SquidEgressStackProps extends cdk.StackProps {
+  /** Single token that namespaces the log group and ECR repo reference. */
+  resourcePrefix?: string;
   egressVpcSsmPath: string;
   egressSubnetASsmPath: string;
   egressSubnetBSsmPath: string;
   egressSubnetCSsmPath: string;
   egressSgSsmPath: string;
-  serviceNetworkIds: { dev: string; stage: string; prod: string };
+  serviceNetworkIds: { dev: string; test: string; prod: string };
   allowedDomains: string;
   desiredCount: number;
   cpu: number;
@@ -33,6 +35,8 @@ export interface SquidEgressStackProps extends cdk.StackProps {
 export class SquidEgressStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: SquidEgressStackProps) {
     super(scope, id, props);
+
+    const resourcePrefix = props.resourcePrefix ?? 'netfabric';
 
     // Resolve VPC and subnet IDs from SSM parameters (3 AZs for HA)
     const egressVpcId = ssm.StringParameter.valueForStringParameter(this, props.egressVpcSsmPath);
@@ -55,13 +59,13 @@ export class SquidEgressStack extends cdk.Stack {
     // ECS Cluster
     const cluster = new ecs.Cluster(this, 'SquidCluster', {
       vpc,
-      clusterName: 'squid-egress-cluster',
-      containerInsights: true,
+      clusterName: `${resourcePrefix}-squid-egress-cluster`,
+      containerInsightsV2: ecs.ContainerInsights.ENABLED,
     });
 
     // CloudWatch Logs
     const logGroup = new logs.LogGroup(this, 'SquidLogs', {
-      logGroupName: '/apg-lattice/ecs/squid-egress-proxy',
+      logGroupName: `/${resourcePrefix}/ecs/squid-egress-proxy`,
       retention: logs.RetentionDays.ONE_MONTH,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
@@ -70,7 +74,7 @@ export class SquidEgressStack extends cdk.Stack {
     const taskDef = new ecs.FargateTaskDefinition(this, 'SquidTaskDef', {
       cpu: props.cpu,
       memoryLimitMiB: props.memory,
-      family: 'squid-egress-proxy',
+      family: `${resourcePrefix}-squid-egress-proxy`,
     });
 
     // Custom Squid image (with baked-in FQDN allowlist) built by CodeBuild and
@@ -85,7 +89,7 @@ export class SquidEgressStack extends cdk.Stack {
         'ecr:BatchGetImage',
         'ecr:BatchCheckLayerAvailability',
       ],
-      resources: [`arn:aws:ecr:${this.region}:${this.account}:repository/apg-lattice-squid-proxy`],
+      resources: [`arn:aws:ecr:${this.region}:${this.account}:repository/${resourcePrefix}-squid-proxy`],
     }));
     taskDef.addToExecutionRolePolicy(new iam.PolicyStatement({
       actions: ['ecr:GetAuthorizationToken'],
@@ -126,6 +130,7 @@ export class SquidEgressStack extends cdk.Stack {
     // Internal Network Load Balancer (TCP:3128)
     const nlb = new elbv2.NetworkLoadBalancer(this, 'SquidNlb', {
       vpc,
+      loadBalancerName: `${resourcePrefix}-squid-egress-nlb`,
       internetFacing: false,
       crossZoneEnabled: true,
       vpcSubnets: { subnets: vpc.privateSubnets },
@@ -152,7 +157,7 @@ export class SquidEgressStack extends cdk.Stack {
     const resourceGateway = new cdk.CfnResource(this, 'EgressResourceGateway', {
       type: 'AWS::VpcLattice::ResourceGateway',
       properties: {
-        Name: 'egress-resource-gateway',
+        Name: `${resourcePrefix}-egress-resource-gateway`,
         VpcIdentifier: egressVpcId,
         SubnetIds: [subnetAId, subnetBId, subnetCId],
         SecurityGroupIds: [sgId],
@@ -166,7 +171,7 @@ export class SquidEgressStack extends cdk.Stack {
     const squidRc = new cdk.CfnResource(this, 'SquidProxyRC', {
       type: 'AWS::VpcLattice::ResourceConfiguration',
       properties: {
-        Name: 'squid-egress-proxy-rc',
+        Name: `${resourcePrefix}-squid-egress-proxy-rc`,
         ResourceConfigurationType: 'SINGLE',
         AllowAssociationToSharableServiceNetwork: true,
         ResourceGatewayId: resourceGateway.getAtt('Id'),

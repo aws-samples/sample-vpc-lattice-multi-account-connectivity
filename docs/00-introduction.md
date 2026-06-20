@@ -21,7 +21,7 @@ Transit Gateway (TGW) is the default hub-and-spoke router for inter-VPC and hybr
 - **Per-attachment hourly charges.** Every VPC attached to the TGW incurs an hourly fee. At 150 accounts with one VPC each, that is 150 attachments billed every hour, before a single byte is processed.
 - **Per-gigabyte data processing.** All traffic that traverses the TGW is charged per GB processed, in addition to the attachment fee. Centralizing AWS service access or egress through a TGW means paying this processing charge on traffic that VPC Lattice can route without an equivalent hop.
 - **Hub-and-spoke complexity.** Centralized inspection, shared services, and egress designs require careful route table and appliance design, often with multiple TGW route tables and appliance VPCs.
-- **Route table sprawl.** Segmentation between environments (dev, stage, prod) is implemented through separate TGW route tables and association/propagation rules. As segmentation requirements grow, the route table matrix becomes hard to reason about and audit.
+- **Route table sprawl.** Segmentation between environments (dev, test, prod) is implemented through separate TGW route tables and association/propagation rules. As segmentation requirements grow, the route table matrix becomes hard to reason about and audit.
 
 ### NAT Gateways for outbound access
 
@@ -47,7 +47,7 @@ Viewed together, these three building blocks turn connectivity into a tax that s
 
 This pattern consolidates AWS service access and internet egress into a single, centrally managed VPC Lattice fabric. The connectivity resources are deployed once, in a central Network account, and consumed by every workload account through VPC Lattice Service Networks. The core elements are:
 
-- **Three shared Service Networks, dev, stage, and prod.** A separate Service Network per environment provides hard isolation: each network carries its own IAM auth policy that restricts access by organizational unit (OU) path, so a dev workload cannot reach prod-shared connectivity. (In the reference implementation these appear with example names; the AWS Cloud Development Kit (CDK) stacks use names such as `sn-dev-shared`, while the CloudFormation templates use names such as `sn-dev-shared`. Throughout this guide we refer to them generically, for example, "the dev service network.")
+- **Three shared Service Networks, dev, test, and prod.** A separate Service Network per environment provides hard isolation: each network carries its own IAM auth policy that restricts access by organizational unit (OU) path, so a dev workload cannot reach prod-shared connectivity. (In the reference implementation these appear with example names; the AWS Cloud Development Kit (CDK) stacks use names such as `sn-dev-shared`, while the CloudFormation templates use names such as `sn-dev-shared`. Throughout this guide we refer to them generically, for example, "the dev service network.")
 - **Resource Gateways exposing shared connectivity.** In the Network account, Resource Gateways expose the shared interface VPC endpoints and a centralized egress proxy as VPC Lattice *Resource Configurations*. The endpoints and the proxy exist once and are reused by every account.
 - **A centralized egress proxy as a Resource Configuration.** A Squid forward proxy on Amazon ECS Fargate, fronted by an internal Network Load Balancer (NLB), is exposed through Lattice as a Resource Configuration. It provides filtered outbound access with an FQDN allowlist, replacing per-account NAT Gateways for controlled egress.
 - **RAM shares scoped to OUs.** AWS Resource Access Manager (RAM) shares each Service Network only to the organizational units that should consume it, with external principals disabled. Sharing is scoped to specific OUs rather than the entire Organization, so the environment isolation model is enforced at the share boundary as well as in the IAM auth policy.
@@ -74,7 +74,7 @@ Readers should be comfortable with core AWS networking concepts (VPCs, subnets, 
 - The problem with traditional TGW, NAT Gateway, and per-account VPC endpoint architectures at scale.
 - VPC Lattice as the sole fabric for **centralized AWS service access** and **centralized, filtered internet egress**.
 - **Ingress to the shared fabric** from external, on-premises, and cross-Region consumers using **Service Network Endpoints (SN-E)**, with the DNS automation that pattern requires.
-- A three-environment isolation model (dev, stage, prod) enforced by IAM auth policies and OU-scoped RAM shares.
+- A three-environment isolation model (dev, test, prod) enforced by IAM auth policies and OU-scoped RAM shares.
 - Automatic DNS resolution behavior using `PrivateDnsEnabled` VPC associations.
 - A phased implementation approach (Foundation, Shared Endpoints, Centralized Egress, Workload Onboarding, and Ingress via Service Network Endpoints) with references to validated CDK and CloudFormation templates.
 - Cost and operational comparisons, Well-Architected alignment, troubleshooting guidance, and a security findings summary.
@@ -97,7 +97,7 @@ VPC Lattice as the sole connectivity fabric is a strong fit for the access patte
 | Primary traffic pattern | Workload-to-AWS-service access and controlled internet egress | High-volume, general-purpose east-west between many VPCs |
 | Protocols | TCP to AWS service endpoints and HTTP/HTTPS egress | Any IP protocol requiring full Layer 3 routing |
 | Isolation model | Environment isolation by Service Network + IAM auth policy + OU-scoped RAM | Network segmentation by route tables and attachments |
-| Onboarding at scale | Single VPC association per account | Per-account attachment plus route table changes |
+| Onboarding at scale | Single VPC association per account | Per-account attachment along with route table changes |
 | Endpoint/egress sprawl | Eliminated via shared endpoints and shared egress proxy | Persists unless paired with centralized designs |
 | Overlapping CIDRs | Not required; access is by DNS/service, not IP route | Supports designs that must tolerate overlapping CIDRs* |
 | Existing investment | Greenfield or actively consolidating connectivity | Significant existing TGW topology and operational tooling |
@@ -109,7 +109,7 @@ VPC Lattice as the sole connectivity fabric is a strong fit for the access patte
 - Your dominant connectivity requirement is **centralized access to AWS services** (Systems Manager, STS, ECR, ECS, CloudWatch Logs, and similar) from many accounts.
 - You need **centralized, filtered internet egress** with FQDN allowlisting for data-exfiltration prevention, and want to eliminate per-account NAT Gateways.
 - You want to **simplify onboarding at scale**, reducing each new account to a single VPC association rather than a fleet of endpoints and gateways.
-- You require **environment isolation by OU** (dev, stage, prod) enforced centrally through IAM auth policies and scoped RAM shares.
+- You require **environment isolation by OU** (dev, test, prod) enforced centrally through IAM auth policies and scoped RAM shares.
 - You are aiming to **reduce the cost and operational duplication** of per-account interface endpoints and NAT Gateways across 50, 150, 500, or more accounts.
 
 ### Keep Transit Gateway when
