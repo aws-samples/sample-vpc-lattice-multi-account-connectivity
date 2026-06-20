@@ -128,7 +128,7 @@ A **Resource Configuration** (RC) is a mapping that exposes a *single, specific 
 A critical implementation detail: the target VPCE DNS names are **not hardcoded**. The two IaC paths discover them differently but arrive at the same result, the deployment is self-healing, so if an endpoint is replaced and its DNS name changes, redeploying rediscovers the correct target:
 
 - **CDK path** reads each interface endpoint's regional DNS name natively from `vpce.attrDnsEntries` at synthesis time (splitting the `hostedZoneId:dnsName` value), so there is **no Lambda** in the CDK path.
-- **CloudFormation path** uses an inline Python 3.12 Lambda custom resource that calls `ec2:DescribeVpcEndpoints` at deploy time, because YAML cannot split the `attrDnsEntries` value natively.
+- **CloudFormation path** is also Lambda-free: `network-foundation.yaml` publishes each endpoint's regional DNS name to SSM (splitting the same `DnsEntries` value natively with `Fn::Select`/`Fn::Split`), and `vpc-lattice-resource-gateways.yaml` reads those SSM parameters via `AWS::SSM::Parameter::Value<String>` for each Resource Configuration target.
 
 Every RC is associated to **all three Service Networks** through a `ServiceNetworkResourceAssociation`, so dev, test, and prod workloads all reach the same shared endpoints and the same egress proxy. The reference implementation exposes **10 endpoint Resource Configurations in the CDK path** (SSM, SSM Messages, EC2 Messages, STS, ECR API, ECR DKR, CloudWatch Logs, ECS, ECS Agent, ECS Telemetry) and an **11th in the CloudFormation path** (`execute-api`), along with the single egress proxy RC.
 
@@ -152,7 +152,7 @@ flowchart LR
 |--------------|--------------|-----------------|
 | `ResourceConfigurationType` | `SINGLE` | `SINGLE` |
 | `CustomDomainName` | e.g. `ssm.us-east-2.amazonaws.com` | proxy-facing domain |
-| `DnsResource` target | VPCE regional DNS (discovered by Lambda) | internal NLB DNS name |
+| `DnsResource` target | VPCE regional DNS (read from SSM, published natively from `DnsEntries`) | internal NLB DNS name |
 | `PortRanges` | `443` | `3128` |
 | `Protocol` | `TCP` | `TCP` |
 | Associated to | dev + test + prod Service Networks | dev + test + prod Service Networks |
@@ -285,7 +285,7 @@ sequenceDiagram
 The remaining implementation work follows the dependency order implied by this architecture:
 
 1. **[Phase 1: Foundation](04-phase1-foundation.md)**, create the three Service Networks, attach the OU-scoped IAM auth policies, and configure the RAM shares. Everything else associates to these networks, so they come first.
-2. **[Phase 2: Shared Endpoints](05-phase2-shared-endpoints.md)**, deploy the endpoint Resource Gateway and the endpoint Resource Configurations (the CDK path reads each VPCE's regional DNS natively from `attrDnsEntries`; the CloudFormation path discovers it with an inline Lambda).
+2. **[Phase 2: Shared Endpoints](05-phase2-shared-endpoints.md)**, deploy the endpoint Resource Gateway and the endpoint Resource Configurations (the CDK path reads each VPCE's regional DNS natively from `attrDnsEntries`; the CloudFormation path reads it from SSM parameters that `network-foundation.yaml` publishes natively from `DnsEntries`).
 3. **[Phase 3: Centralized Egress](06-phase3-centralized-egress.md)**, deploy the Squid proxy, the internal NLB, the egress Resource Gateway, and the egress Resource Configuration.
 4. **[Phase 4: Workload Onboarding](07-phase4-workload-onboarding.md)**, associate each workload VPC with `PrivateDnsEnabled`, and automate that association across many accounts.
 5. **[Phase 5: Ingress via Service Network Endpoints](08-phase5-ingress-service-network-endpoints.md)**, expose the same shared fabric to external, on-premises, and cross-Region consumers through SN-E, with EventBridge + Step Functions + Route 53 DNS automation keeping the custom-domain records current.

@@ -858,6 +858,88 @@ Resources:
       Value: !GetAtt EndpointRgSecurityGroup.GroupId
       Description: Network fabric Endpoint Resource Gateway SG
 
+  # Interface-endpoint regional DNS names, published natively from each VPCE's
+  # DnsEntries (format "hostedZoneId:dnsName"; take the dnsName half). The
+  # vpc-lattice-resource-gateways template reads these to set each Resource
+  # Configuration's target DomainName, so no Lambda is needed to discover them.
+  SsmVpceDnsParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub ${SsmPrefix}/network/endpoint-vpc/vpce/ssm/dns
+      Type: String
+      Value: !Select [1, !Split [':', !Select [0, !GetAtt SsmVpce.DnsEntries]]]
+      Description: Endpoint VPC ssm interface endpoint DNS name
+  SsmMessagesVpceDnsParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub ${SsmPrefix}/network/endpoint-vpc/vpce/ssmmessages/dns
+      Type: String
+      Value: !Select [1, !Split [':', !Select [0, !GetAtt SsmMessagesVpce.DnsEntries]]]
+      Description: Endpoint VPC ssmmessages interface endpoint DNS name
+  Ec2MessagesVpceDnsParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub ${SsmPrefix}/network/endpoint-vpc/vpce/ec2messages/dns
+      Type: String
+      Value: !Select [1, !Split [':', !Select [0, !GetAtt Ec2MessagesVpce.DnsEntries]]]
+      Description: Endpoint VPC ec2messages interface endpoint DNS name
+  StsVpceDnsParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub ${SsmPrefix}/network/endpoint-vpc/vpce/sts/dns
+      Type: String
+      Value: !Select [1, !Split [':', !Select [0, !GetAtt StsVpce.DnsEntries]]]
+      Description: Endpoint VPC sts interface endpoint DNS name
+  EcrApiVpceDnsParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub ${SsmPrefix}/network/endpoint-vpc/vpce/ecr-api/dns
+      Type: String
+      Value: !Select [1, !Split [':', !Select [0, !GetAtt EcrApiVpce.DnsEntries]]]
+      Description: Endpoint VPC ecr.api interface endpoint DNS name
+  EcrDkrVpceDnsParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub ${SsmPrefix}/network/endpoint-vpc/vpce/ecr-dkr/dns
+      Type: String
+      Value: !Select [1, !Split [':', !Select [0, !GetAtt EcrDkrVpce.DnsEntries]]]
+      Description: Endpoint VPC ecr.dkr interface endpoint DNS name
+  LogsVpceDnsParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub ${SsmPrefix}/network/endpoint-vpc/vpce/logs/dns
+      Type: String
+      Value: !Select [1, !Split [':', !Select [0, !GetAtt LogsVpce.DnsEntries]]]
+      Description: Endpoint VPC logs interface endpoint DNS name
+  EcsVpceDnsParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub ${SsmPrefix}/network/endpoint-vpc/vpce/ecs/dns
+      Type: String
+      Value: !Select [1, !Split [':', !Select [0, !GetAtt EcsVpce.DnsEntries]]]
+      Description: Endpoint VPC ecs interface endpoint DNS name
+  EcsAgentVpceDnsParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub ${SsmPrefix}/network/endpoint-vpc/vpce/ecs-agent/dns
+      Type: String
+      Value: !Select [1, !Split [':', !Select [0, !GetAtt EcsAgentVpce.DnsEntries]]]
+      Description: Endpoint VPC ecs-agent interface endpoint DNS name
+  EcsTelemetryVpceDnsParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub ${SsmPrefix}/network/endpoint-vpc/vpce/ecs-telemetry/dns
+      Type: String
+      Value: !Select [1, !Split [':', !Select [0, !GetAtt EcsTelemetryVpce.DnsEntries]]]
+      Description: Endpoint VPC ecs-telemetry interface endpoint DNS name
+  ExecuteApiVpceDnsParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub ${SsmPrefix}/network/endpoint-vpc/vpce/execute-api/dns
+      Type: String
+      Value: !Select [1, !Split [':', !Select [0, !GetAtt ExecuteApiVpce.DnsEntries]]]
+      Description: Endpoint VPC execute-api interface endpoint DNS name
+
   # Egress VPC
   EgressVpcIdParam:
     Type: AWS::SSM::Parameter

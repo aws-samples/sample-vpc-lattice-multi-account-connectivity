@@ -2,7 +2,7 @@
 
 [Phase 1: Foundation](04-phase1-foundation.md) created the three Service Networks, attached their OU-scoped IAM auth policies, and configured the RAM shares, the bottom of the stack that everything else attaches to. This phase builds the first thing that attaches to those networks: the shared AWS service endpoints. It deploys a **Resource Gateway** into the Endpoint VPC and a **Resource Configuration** for each interface VPC endpoint, then associates every Resource Configuration to all three Service Networks so dev, test, and prod workloads reach the same shared endpoints.
 
-This is the phase that turns "a handful of interface endpoints in one VPC" into "every workload account can resolve and reach `ssm.us-east-2.amazonaws.com` privately, with no per-account endpoint." The mechanism that makes it self-healing, a Lambda custom resource that discovers each endpoint's regional DNS name at deploy time, is also introduced here.
+This is the phase that turns "a handful of interface endpoints in one VPC" into "every workload account can resolve and reach `ssm.us-east-2.amazonaws.com` privately, with no per-account endpoint." The mechanism that makes it self-healing, resolving each endpoint's regional DNS name at deploy time rather than hardcoding it, is also introduced here; both IaC paths do this natively, with no Lambda.
 
 > **A note on conventions.** As elsewhere in this guide, examples use the `us-east-2` Region and placeholder identifiers (organization ID `o-EXAMPLE12345`, account `111111111111`). The reference IaC names the endpoint Resource Gateway `endpoint-resource-gateway` in the CDK path and `endpoint-resource-gw` in the CloudFormation path; this section refers to it generically as the endpoint Resource Gateway.
 
@@ -24,7 +24,7 @@ In the CloudFormation path the two phases live in the **same combined template**
 | Deployment target | **Network account**, into the **Endpoint VPC** |
 | Region | `us-east-2` (adjust if you deploy elsewhere) |
 | Depends on | [Phase 1: Foundation](04-phase1-foundation.md), needs the three Service Network IDs |
-| Resources created | 1 endpoint Resource Gateway, 10 Resource Configurations (CDK) / 11 (CloudFormation), one `ServiceNetworkResourceAssociation` per RC per Service Network, 1 VPCE DNS lookup Lambda |
+| Resources created | 1 endpoint Resource Gateway, 10 Resource Configurations (CDK) / 11 (CloudFormation), one `ServiceNetworkResourceAssociation` per RC per Service Network |
 | Stack outputs consumed by | Phase 4 (workloads resolve these endpoints after association) |
 
 Everything in this phase deploys to the Network account, specifically into the Endpoint VPC that holds the pre-deployed interface VPC endpoints. No deployment touches the management account or any workload account in this phase.
@@ -36,8 +36,8 @@ The global prerequisites in [Prerequisites](02-prerequisites.md) must be satisfi
 - [ ] **Phase 1 is complete**, and the three Service Network IDs are available, as CDK stack outputs (`ServiceNetworkDevId`, `ServiceNetworkTestId`, `ServiceNetworkProdId`) on the CDK path, or created in the same template on the CloudFormation path.
 - [ ] **The Endpoint VPC, two Resource Gateway subnets, and the Resource Gateway security group exist**, and their IDs are published to the `/netfabric/network/...` SSM paths (or your equivalent if you re-pointed the IaC to a different prefix such as LZA's `/accelerator/network/...`). The IaC resolves these at deploy time rather than hardcoding them.
 - [ ] **Resource Gateway subnets are a minimum of /24.** The Resource Gateway provisions elastic network interfaces (ENIs) in these subnets and scales them with connection volume; undersized subnets risk IP exhaustion and intermittent failures. (See [subnet sizing](02-prerequisites.md#3-subnet-sizing-requirements); this is requirement 9.3.)
-- [ ] **The interface VPC endpoints already exist in the Endpoint VPC.** The Lambda custom resource discovers them at deploy time, it does not create them. The implementation expects the 10 endpoints listed below (11 on the CloudFormation path).
-- [ ] **Deployment IAM capability in the Network account** to create VPC Lattice Resource Gateways, Resource Configurations, and Service Network associations; to create the Lambda custom resource and its role; and to read the `/netfabric/network/...` SSM parameters (or your equivalent SSM prefix). (CDK path additionally requires `cdk bootstrap`.)
+- [ ] **The interface VPC endpoints already exist in the Endpoint VPC.** This phase wires them in by their regional DNS name; it does not create them. The implementation expects the 10 endpoints listed below (11 on the CloudFormation path).
+- [ ] **Deployment IAM capability in the Network account** to create VPC Lattice Resource Gateways, Resource Configurations, and Service Network associations; and to read the `/netfabric/network/...` SSM parameters (or your equivalent SSM prefix). (CDK path additionally requires `cdk bootstrap`.)
 
 ## Step 1, Deploy the Resource Gateway in the Endpoint VPC
 
@@ -129,12 +129,32 @@ const rc = new cdk.CfnResource(this, `RC-${ep.key}`, {
 
 The CDK path then associates each Resource Configuration with all three Service Networks with `PrivateDnsEnabled: true`, which is what triggers VPC Lattice to provision the managed Private Hosted Zone for `CustomDomainName` in associated workload VPCs.
 
-### CloudFormation path: resolve VPCE DNS dynamically with a Lambda custom resource
+### CloudFormation path: read VPCE DNS from SSM published by network-foundation
 
-The CloudFormation template cannot split `attrDnsEntries` natively in YAML, so it uses an inline Python 3.12 Lambda custom resource to discover interface endpoint DNS names through `ec2:DescribeVpcEndpoints` and return them as a map keyed by service name. Each Resource Configuration then references the map:
+The CloudFormation template cannot split `attrDnsEntries` natively in a Resource Configuration property, so the work is split across the two templates and still stays fully native, with no Lambda. `cloudformation/network-foundation.yaml` (which owns the interface endpoints) publishes each endpoint's regional DNS name to SSM Parameter Store, computing the value from the endpoint's own `DnsEntries`:
+
+```yaml
+# cloudformation/network-foundation.yaml (excerpt)
+SsmVpceDnsParam:
+  Type: AWS::SSM::Parameter
+  Properties:
+    Name: /netfabric/network/endpoint-vpc/vpce/ssm/dns
+    Type: String
+    # DnsEntries[0] is "<hostedZoneId>:<dnsName>"; take the dnsName half.
+    Value: !Select [1, !Split [":", !Select [0, !GetAtt SsmVpceEndpoint.DnsEntries]]]
+```
+
+`cloudformation/vpc-lattice-resource-gateways.yaml` then declares one `AWS::SSM::Parameter::Value<String>` parameter per endpoint (for example `SsmVpceDns`, `StsVpceDns`, `EcrApiVpceDns`), each defaulting to the matching `/netfabric/network/endpoint-vpc/vpce/<key>/dns` path, and each Resource Configuration's `DnsResource.DomainName` is a plain `!Ref` to that parameter:
 
 ```yaml
 # cloudformation/vpc-lattice-resource-gateways.yaml (excerpt)
+Parameters:
+  SsmVpceDns:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /netfabric/network/endpoint-vpc/vpce/ssm/dns
+
+# ...
+
 SsmResourceConfig:
   Type: AWS::VpcLattice::ResourceConfiguration
   Properties:
@@ -147,19 +167,15 @@ SsmResourceConfig:
     ProtocolType: TCP
     ResourceConfigurationDefinition:
       DnsResource:
-        DomainName: !GetAtt VpceDnsLookup.ssm           # Lambda-resolved VPCE regional DNS (the target)
+        DomainName: !Ref SsmVpceDns                      # VPCE regional DNS from SSM (the target)
         IpAddressType: IPV4
 ```
 
-The Lambda is **Python 3.12**, paginates `ec2:DescribeVpcEndpoints`, parses each `ServiceName` (which follows `com.amazonaws.<region>.<service>`) into a service key, normalizes the key to a CloudFormation-safe attribute name (replacing dots and dashes with underscores so `ecr.api` becomes `ecr_api`), and returns a map of normalized service key → regional DNS name. It signals success or failure back to CloudFormation through `urllib3` directly, `send_cfn(..., 'SUCCESS', result)` on success, `send_cfn(..., 'FAILED', {}, reason=str(e))` on error, with no external dependencies. On `Delete` events it returns SUCCESS as a no-op.
-
-The Lambda's role is granted `ec2:DescribeVpcEndpoints` on a wildcard resource because that read-only describe API does not support resource-level permissions per AWS IAM documentation. That is a least-privilege-conscious exception, not an oversight.
+At deploy time CloudFormation resolves each `AWS::SSM::Parameter::Value<String>` parameter to the current value `network-foundation.yaml` published from `DnsEntries`, so the Resource Configuration always points at the endpoint's live regional DNS name. There is no `ec2:DescribeVpcEndpoints` call, no IAM role, and no custom resource: the value is computed once from `DnsEntries` in the foundation template and read by reference in the gateways template.
 
 ### Why both approaches self-heal
 
-In both paths, the VPCE regional DNS name is **looked up at deploy time rather than written down**. If an interface endpoint is deleted and recreated and its regional DNS changes, simply redeploying the stack rediscovers the correct target, through `attrDnsEntries` in the CDK path or the Lambda's `DescribeVpcEndpoints` call in the CloudFormation path, and re-wires it. There is nothing to update by hand and no stale value to drift. This is the design rationale behind preferring dynamic resolution over a static list of DNS names. (This addresses requirement 8.3 and the design's self-healing rationale.)
-
-> **Runtime note.** The CloudFormation Lambda uses **Python 3.12** (requirement 5.6).
+In both paths, the VPCE regional DNS name is **resolved at deploy time rather than written down**. If an interface endpoint is deleted and recreated and its regional DNS changes, simply redeploying the stacks re-resolves the correct target, through `attrDnsEntries` in the CDK path or the SSM parameter that `network-foundation.yaml` recomputes from `DnsEntries` in the CloudFormation path, and re-wires it. There is nothing to update by hand and no stale value to drift. This is the design rationale behind preferring dynamic resolution over a static list of DNS names. (This addresses requirement 8.3 and the design's self-healing rationale.)
 
 ## Step 3, Create a Resource Configuration per endpoint and associate to all three Service Networks
 
@@ -213,7 +229,7 @@ for (const ep of endpoints) {
 
 ### The 10 endpoints (CDK), with an 11th in CloudFormation
 
-| # | Endpoint (`name`) | Service domain pattern (`{domain}.us-east-2.amazonaws.com`) | Normalized service key (CFN Lambda map key) |
+| # | Endpoint (`name`) | Service domain pattern (`{domain}.us-east-2.amazonaws.com`) | Normalized service key (CFN SSM parameter) |
 |---|-------------------|-------------------------------------------------------------|------------------------|
 | 1 | `ssm` | `ssm.us-east-2.amazonaws.com` | `ssm` |
 | 2 | `ssmmessages` | `ssmmessages.us-east-2.amazonaws.com` | `ssmmessages` |
@@ -235,15 +251,15 @@ The two IaC paths arrive at the same wiring through different mechanisms, but th
 
 | Attribute | CDK (`VpcLatticeEndpointsStack`) | CloudFormation (`vpc-lattice-resource-gateways.yaml`) |
 |-----------|----------------------------------|--------------------------------------------------------|
-| `DnsResource.DomainName` (RC target) | VPCE regional DNS read natively from `attrDnsEntries` | Lambda-resolved VPCE regional DNS: `!GetAtt VpceDnsLookup.<key>` |
+| `DnsResource.DomainName` (RC target) | VPCE regional DNS read natively from `attrDnsEntries` | VPCE regional DNS read from SSM: `!Ref SsmVpceDns` (published by `network-foundation.yaml` from `DnsEntries`) |
 | `CustomDomainName` | Public service domain: `${customDomain}.${region}.amazonaws.com` | Public service domain: `!Sub <service>.${AWS::Region}.amazonaws.com` |
 | `ResourceConfigurationType` | Explicit `SINGLE` | Explicit `SINGLE` |
 | Port / protocol | `PortRanges: ['443']`, `ProtocolType: TCP` | `PortRanges: ['443']`, `ProtocolType: TCP` |
 | Association `PrivateDnsEnabled` | `true` | `true` |
 | Endpoints exposed | 10 | 11 (adds `execute-api`) |
-| VPCE DNS discovery mechanism | Native `attrDnsEntries` split with `Fn::Split` | Inline Python 3.12 Lambda custom resource |
+| VPCE DNS discovery mechanism | Native `attrDnsEntries` split with `Fn::Split` | Native SSM: `network-foundation.yaml` publishes `DnsEntries` to SSM, read via `AWS::SSM::Parameter::Value<String>` |
 
-**Both paths are functionally equivalent for the workload-facing behavior.** The CDK path is simpler because it does not require a Lambda; the CloudFormation path needs the Lambda only because YAML cannot split `attrDnsEntries` natively. Choose the path that fits your IaC tooling, the runtime DNS resolution behavior, the `PrivateDnsEnabled` semantics, and the self-healing properties are the same.
+**Both paths are functionally equivalent for the workload-facing behavior.** Neither path requires a Lambda; each resolves the VPCE regional DNS natively (the CDK path splits `attrDnsEntries`, the CloudFormation path reads an SSM parameter that `network-foundation.yaml` computed from `DnsEntries`). Choose the path that fits your IaC tooling, the runtime DNS resolution behavior, the `PrivateDnsEnabled` semantics, and the self-healing properties are the same.
 
 The CloudFormation RC + association shape, for one endpoint:
 
@@ -261,7 +277,7 @@ SsmResourceConfig:
     ProtocolType: TCP
     ResourceConfigurationDefinition:
       DnsResource:
-        DomainName: !GetAtt VpceDnsLookup.ssm            # Lambda-resolved VPCE regional DNS (the target)
+        DomainName: !Ref SsmVpceDns                      # VPCE regional DNS from SSM (the target)
         IpAddressType: IPV4
 
 SsmSNAssocDev:
@@ -275,7 +291,7 @@ SsmSNAssocDev:
 
 ### How this ties into the DNS resolution path
 
-The Lambda-resolved VPCE regional DNS name is the **target at the far end of the resolution path** described in [Architecture](03-architecture.md#privatednsenabled-behavior-and-automatic-private-hosted-zone-creation) (requirement 8.3). When a workload later resolves a public service domain such as `ssm.us-east-2.amazonaws.com`, the Lattice-managed Private Hosted Zone returns a VPC Lattice IP; the workload connects to that IP; traffic routes through the endpoint Resource Gateway ENI in the Endpoint VPC; and the gateway forwards to the RC's `DnsResource` target, the **interface VPC endpoint's regional DNS name discovered by this Lambda**. In other words, the value this phase wires into each RC is the last hop before the AWS service itself. (`PrivateDnsEnabled: true` on the association, present on the CloudFormation path, is what causes Lattice to create that Private Hosted Zone for the RC's custom domain.)
+The VPCE regional DNS name read from SSM is the **target at the far end of the resolution path** described in [Architecture](03-architecture.md#privatednsenabled-behavior-and-automatic-private-hosted-zone-creation) (requirement 8.3). When a workload later resolves a public service domain such as `ssm.us-east-2.amazonaws.com`, the Lattice-managed Private Hosted Zone returns a VPC Lattice IP; the workload connects to that IP; traffic routes through the endpoint Resource Gateway ENI in the Endpoint VPC; and the gateway forwards to the RC's `DnsResource` target, the **interface VPC endpoint's regional DNS name that `network-foundation.yaml` published to SSM from `DnsEntries`**. In other words, the value this phase wires into each RC is the last hop before the AWS service itself. (`PrivateDnsEnabled: true` on the association, present on the CloudFormation path, is what causes Lattice to create that Private Hosted Zone for the RC's custom domain.)
 
 ## IaC reference
 
@@ -305,7 +321,7 @@ It outputs `ResourceGatewayId` for use in verification and downstream references
 
 ### CloudFormation path
 
-The endpoint Resource Gateway, the 11 Resource Configurations, the Service Network associations (`PrivateDnsEnabled: true`), and the VPCE DNS lookup Lambda all live in the combined `cloudformation/vpc-lattice-resource-gateways.yaml`, the same template that creates the Service Networks in Phase 1. Deploying that template (see the [Phase 1 CloudFormation deployment command](04-phase1-foundation.md#cloudformation-path)) creates the foundation and the shared endpoints together. The template's custom resource passes the endpoint list (`ssm,ssmmessages,ec2messages,sts,ecr.api,ecr.dkr,logs,ecs,ecs-agent,ecs-telemetry,execute-api`) as a property that also acts as a cache-buster to force Lambda re-invocation on stack updates.
+The endpoint Resource Gateway, the 11 Resource Configurations, and the Service Network associations (`PrivateDnsEnabled: true`) all live in the combined `cloudformation/vpc-lattice-resource-gateways.yaml`, the same template that creates the Service Networks in Phase 1. Deploying that template (see the [Phase 1 CloudFormation deployment command](04-phase1-foundation.md#cloudformation-path)) creates the foundation and the shared endpoints together. Each Resource Configuration's `DnsResource.DomainName` is an `AWS::SSM::Parameter::Value<String>` parameter that resolves to the regional DNS name `cloudformation/network-foundation.yaml` published from the endpoint's `DnsEntries`, so the targets are read fresh on every deployment with no value to hardcode.
 
 ## Expected outcome
 
@@ -314,11 +330,11 @@ After this phase completes, the Network account's Endpoint VPC contains: (this a
 - **One endpoint Resource Gateway** (`endpoint-resource-gateway` in CDK / `endpoint-resource-gw` in CloudFormation), healthy and active, with ENIs in the two Resource Gateway subnets.
 - **10 Resource Configurations** on the CDK path (`11` on the CloudFormation path, including `execute-api`), each of type `SINGLE`, on port `443`/`TCP`.
 - **A `ServiceNetworkResourceAssociation` for every RC to each of the three Service Networks**, with `PrivateDnsEnabled: true`, so dev, test, and prod all reach the same shared endpoints.
-- **Each RC's `DnsResource.DomainName` is the interface endpoint's regional VPCE DNS name**, resolved natively from `attrDnsEntries` (CDK) or by the inline Lambda's `DescribeVpcEndpoints` call (CloudFormation).
+- **Each RC's `DnsResource.DomainName` is the interface endpoint's regional VPCE DNS name**, resolved natively from `attrDnsEntries` (CDK) or from the SSM parameter that `network-foundation.yaml` published from `DnsEntries` (CloudFormation).
 
 ### Verification
 
-Confirm the gateway, the configurations, and the DNS discovery before moving on:
+Confirm the gateway, the configurations, and the DNS wiring before moving on:
 
 ```bash
 # The endpoint Resource Gateway exists and is ACTIVE
@@ -336,16 +352,17 @@ aws vpc-lattice get-resource-configuration \
   --resource-configuration-identifier <rc-id> --region us-east-2 \
   --query 'ResourceConfigurationDefinition.DnsResource'
 
-# CloudFormation path only, read the inline Lambda's logs to see discovered endpoints
-aws logs tail /aws/lambda/<stack-name>-vpce-dns-lookup --region us-east-2
+# CloudFormation path only, confirm network-foundation published the VPCE DNS to SSM
+aws ssm get-parameter --name /netfabric/network/endpoint-vpc/vpce/ssm/dns \
+  --region us-east-2 --query 'Parameter.Value' --output text
 ```
 
 Also check, in the console:
 
 - **VPC Lattice → Resource gateways**: the endpoint Resource Gateway listed as **Active**, in the Endpoint VPC, across two subnets.
 - **VPC Lattice → Resource configurations**: 10 (CDK) or 11 (CloudFormation) configurations, each on port 443/TCP, each associated to the dev, test, and prod Service Networks with `PrivateDnsEnabled: true`.
-- **CloudFormation path only, CloudWatch → Log groups → `/aws/lambda/<stack-name>-vpce-dns-lookup`**: a recent invocation logging `Found endpoint: <service> -> <vpce-dns-name>` lines and a `Total endpoints discovered` count.
+- **CloudFormation path only, Systems Manager → Parameter Store**: the parameters `/netfabric/network/endpoint-vpc/vpce/<key>/dns` exist (one per endpoint) and each holds the matching interface endpoint's regional VPCE DNS name.
 
-If the Resource Gateway is stuck or unhealthy, the most common cause is subnet IP exhaustion, confirm the Resource Gateway subnets are /24 or larger, as the prerequisites require. On the CloudFormation path, if the Lambda returned fewer endpoints than expected, confirm all interface endpoints exist in the Endpoint VPC and are of type `Interface`; the lookup filters on both `vpc-id` and `vpc-endpoint-type=Interface`. On the CDK path, each Resource Configuration is wired directly to its endpoint's `attrDnsEntries`, so the same diagnosis is "is the endpoint healthy in the Endpoint VPC?"
+If the Resource Gateway is stuck or unhealthy, the most common cause is subnet IP exhaustion, confirm the Resource Gateway subnets are /24 or larger, as the prerequisites require. On the CloudFormation path, if a Resource Configuration has the wrong or an empty DNS target, confirm the `/netfabric/network/endpoint-vpc/vpce/<key>/dns` SSM parameters exist and that the corresponding interface endpoints exist in the Endpoint VPC and are healthy (each parameter value is computed by `network-foundation.yaml` from the endpoint's `DnsEntries`). On the CDK path, each Resource Configuration is wired directly to its endpoint's `attrDnsEntries`, so the same diagnosis is "is the endpoint healthy in the Endpoint VPC?"
 
 Continue to [Phase 3: Centralized Egress](06-phase3-centralized-egress.md).

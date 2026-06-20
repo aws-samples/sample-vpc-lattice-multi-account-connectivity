@@ -367,7 +367,7 @@ The result is a low-risk migration: the fabric proves itself on a pilot OU, expa
 
 - **Per-Region Service Networks.** Deploy the three Service Networks (dev/test/prod) in each Region.
 - **Per-Region shared components.** Deploy a Resource Gateway, the interface endpoints, the Resource Configurations, and the egress proxy stack in each Region's Network-account VPCs. Endpoints and the proxy are regional resources.
-- **Per-Region workload association.** Associate each workload VPC to the Service Network **in its own Region**, a VPC in `us-east-2` associates to the `us-east-2` Service Network, a VPC in `us-west-2` to the `us-west-2` one. The custom-resource lookup and `PrivateDnsEnabled` behavior are identical in each Region.
+- **Per-Region workload association.** Associate each workload VPC to the Service Network **in its own Region**, a VPC in `us-east-2` associates to the `us-east-2` Service Network, a VPC in `us-west-2` to the `us-west-2` one. The endpoint DNS resolution and `PrivateDnsEnabled` behavior are identical in each Region.
 - **RAM shares and auth policies are regional.** Create the RAM shares and the OU-path IAM auth policies in each Region; they do not span Regions.
 
 Operationally this means your IaC is parameterized by Region and instantiated once per Region, the same stacks, deployed into each Region's Network account VPCs, with workload accounts associating to the Service Network local to their Region. The single-fabric dependency and its mitigations (multi-AZ Resource Gateways, multi-task Fargate) apply within each Region; the trade-offs are discussed in [Well-Architected Framework Alignment](10-well-architected.md#trade-offs-and-design-tensions). Replace every `us-east-2` reference in this guide with the target Region when you extend the pattern.
@@ -376,7 +376,7 @@ Operationally this means your IaC is parameterized by Region and instantiated on
 
 **Yes.** The reference exposes 10 endpoints on the CDK path (11 on the CloudFormation path, which adds `execute-api`). To add another AWS service:
 
-1. Deploy the interface VPC endpoint for the new service in the Endpoint VPC (it is then referenced by its regional DNS name, read natively from `DnsEntries` on the CDK path, or discovered by the VPCE DNS lookup Lambda on the CloudFormation path).
+1. Deploy the interface VPC endpoint for the new service in the Endpoint VPC (it is then referenced by its regional DNS name, read natively from `DnsEntries` on the CDK path, or read from the SSM parameter that `network-foundation.yaml` publishes from `DnsEntries` on the CloudFormation path).
 2. Add the service to the `endpoints` array in `VpcLatticeEndpointsStack` (CDK) or to the endpoint list in the combined CloudFormation template. Each entry produces a Resource Configuration on `443/TCP` associated to all three Service Networks.
 3. Redeploy. Workloads resolve the new domain automatically through the Lattice-managed PHZ, no per-account change is required. See [Phase 2](05-phase2-shared-endpoints.md#step-3--create-a-resource-configuration-per-endpoint-and-associate-to-all-three-service-networks) for the structure.
 
@@ -394,9 +394,9 @@ The managed IP range depends on **what** you are resolving, and this is the sing
 
 This guide exposes everything as **VPC resources**, so a correct `dig +short ssm.{region}.amazonaws.com` from inside an associated workload VPC returns an address in the `129.224.0.0/17` range. (Earlier drafts of this guide cited `169.254.171.x` here; that is the *services* range and does not apply to the resource-based pattern.) The reliable signal in all cases is that the answer is **not** part of your workload VPC CIDR and **not** the service's public anycast IP. The reference Resource Configurations use `IpAddressType: IPV4`; if you require IPv6 resolution end to end, set the appropriate `IpAddressType` on the Resource Configurations and confirm your endpoints and subnets are dual-stack.
 
-### What runtime does the Lambda custom resource use?
+### Does the solution use any Lambda functions?
 
-**Python 3.12.** The solution has a single Lambda, the VPCE DNS lookup ([Phase 2](05-phase2-shared-endpoints.md)) on the **CloudFormation path**, and it runs on the Python 3.12 runtime, which is the standard for this pattern. The CDK path has no Lambda (it reads endpoint DNS natively from the endpoint's `DnsEntries`), and the workload association uses no Lambda on either path (the VPC ID resolves via a native `AWS::SSM::Parameter::Value` and the service network ID is passed as a parameter).
+**No, the solution is fully Lambda-free on both the CDK and CloudFormation paths.** Endpoint DNS is resolved natively: the CDK path reads each interface endpoint's regional DNS from its `DnsEntries`, and the CloudFormation path reads SSM parameters that `network-foundation.yaml` publishes from those same `DnsEntries` (consumed in `vpc-lattice-resource-gateways.yaml` via `AWS::SSM::Parameter::Value<String>`). The workload association resolves the VPC ID through a native `AWS::SSM::Parameter::Value` with the service network ID passed as a parameter. The ingress DNS automation ([Phase 5](08-phase5-ingress-service-network-endpoints.md)) is built on Step Functions with native SDK integrations to Route 53 and DynamoDB. None of these paths runs a Lambda.
 
 ### How do I update the egress allowlist without a full redeploy?
 

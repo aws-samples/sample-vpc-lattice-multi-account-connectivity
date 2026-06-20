@@ -47,6 +47,54 @@ Parameters:
     Type: String
     Description: Org path for the Prod OU
 
+  # Interface-endpoint DNS names, published to SSM by network-foundation.yaml
+  # (from each VPCE's DnsEntries). Read here to set each Resource Configuration's
+  # target DomainName natively, so no DNS-discovery Lambda is required.
+  SsmVpceDns:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /netfabric/network/endpoint-vpc/vpce/ssm/dns
+    Description: SSM path for the ssm interface endpoint DNS name
+  SsmMessagesVpceDns:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /netfabric/network/endpoint-vpc/vpce/ssmmessages/dns
+    Description: SSM path for the ssmmessages interface endpoint DNS name
+  Ec2MessagesVpceDns:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /netfabric/network/endpoint-vpc/vpce/ec2messages/dns
+    Description: SSM path for the ec2messages interface endpoint DNS name
+  StsVpceDns:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /netfabric/network/endpoint-vpc/vpce/sts/dns
+    Description: SSM path for the sts interface endpoint DNS name
+  EcrApiVpceDns:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /netfabric/network/endpoint-vpc/vpce/ecr-api/dns
+    Description: SSM path for the ecr.api interface endpoint DNS name
+  EcrDkrVpceDns:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /netfabric/network/endpoint-vpc/vpce/ecr-dkr/dns
+    Description: SSM path for the ecr.dkr interface endpoint DNS name
+  LogsVpceDns:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /netfabric/network/endpoint-vpc/vpce/logs/dns
+    Description: SSM path for the logs interface endpoint DNS name
+  EcsVpceDns:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /netfabric/network/endpoint-vpc/vpce/ecs/dns
+    Description: SSM path for the ecs interface endpoint DNS name
+  EcsAgentVpceDns:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /netfabric/network/endpoint-vpc/vpce/ecs-agent/dns
+    Description: SSM path for the ecs-agent interface endpoint DNS name
+  EcsTelemetryVpceDns:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /netfabric/network/endpoint-vpc/vpce/ecs-telemetry/dns
+    Description: SSM path for the ecs-telemetry interface endpoint DNS name
+  ExecuteApiVpceDns:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /netfabric/network/endpoint-vpc/vpce/execute-api/dns
+    Description: SSM path for the execute-api interface endpoint DNS name
+
 Resources:
 
   # ============================================================
@@ -80,116 +128,6 @@ Resources:
             Condition:
               ArnLike:
                 'kms:EncryptionContext:aws:logs:arn': !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
-
-  # ============================================================
-  # Dead-letter queue for the VPCE DNS lookup custom resource
-  # ============================================================
-  VpceDnsLookupDlq:
-    Type: AWS::SQS::Queue
-    Properties:
-      MessageRetentionPeriod: 1209600
-      KmsMasterKeyId: alias/aws/sqs
-
-  # ============================================================
-  # Lambda to look up VPC Endpoint DNS names dynamically
-  # ============================================================
-  VpceDnsLookupManagedPolicy:
-    Type: AWS::IAM::ManagedPolicy
-    Properties:
-      Description: Allows the VPCE DNS lookup function to describe interface VPC endpoints
-      PolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Action:
-              - ec2:DescribeVpcEndpoints
-            Resource: '*'
-          - Effect: Allow
-            Action:
-              - sqs:SendMessage
-            Resource: !GetAtt VpceDnsLookupDlq.Arn
-
-  VpceDnsLookupRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-        - !Ref VpceDnsLookupManagedPolicy
-
-  VpceDnsLookupFunction:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: !Sub '${AWS::StackName}-vpce-dns-lookup'
-      Runtime: python3.12
-      Handler: index.handler
-      Timeout: 60
-      ReservedConcurrentExecutions: 1
-      Role: !GetAtt VpceDnsLookupRole.Arn
-      DeadLetterConfig:
-        TargetArn: !GetAtt VpceDnsLookupDlq.Arn
-      Code:
-        ZipFile: |
-          import boto3, json, urllib3
-          http = urllib3.PoolManager()
-          def send_cfn(event, context, status, data, reason=''):
-            body = json.dumps({
-              'Status': status,
-              'Reason': reason or f'See CloudWatch Log Stream: {context.log_stream_name}',
-              'PhysicalResourceId': context.log_stream_name,
-              'StackId': event['StackId'],
-              'RequestId': event['RequestId'],
-              'LogicalResourceId': event['LogicalResourceId'],
-              'Data': data
-            })
-            http.request('PUT', event['ResponseURL'], body=body,
-              headers={'Content-Type': ''})
-          def handler(event, context):
-            if event['RequestType'] == 'Delete':
-              send_cfn(event, context, 'SUCCESS', {})
-              return
-            try:
-              vpc_id = event['ResourceProperties']['VpcId']
-              ec2 = boto3.client('ec2')
-              paginator = ec2.get_paginator('describe_vpc_endpoints')
-              result = {}
-              for page in paginator.paginate(Filters=[
-                {'Name': 'vpc-id', 'Values': [vpc_id]},
-                {'Name': 'vpc-endpoint-type', 'Values': ['Interface']}
-              ]):
-                for ep in page['VpcEndpoints']:
-                  parts = ep['ServiceName'].split('.')
-                  region_idx = None
-                  for i, p in enumerate(parts):
-                    if p.startswith('us-') or p.startswith('eu-') or p.startswith('ap-') or p.startswith('sa-') or p.startswith('ca-') or p.startswith('me-') or p.startswith('af-'):
-                      region_idx = i
-                      break
-                  svc_key = '.'.join(parts[region_idx+1:]) if region_idx else parts[-1]
-                  dns_entries = ep.get('DnsEntries', [])
-                  if dns_entries:
-                    dns_name = dns_entries[0]['DnsName']
-                    cfn_key = svc_key.replace('.', '_').replace('-', '_')
-                    result[cfn_key] = dns_name
-                    print(f'Found endpoint: {svc_key} -> {dns_name}')
-              send_cfn(event, context, 'SUCCESS', result)
-            except Exception as e:
-              print(f'Error: {e}')
-              send_cfn(event, context, 'FAILED', {}, reason=str(e))
-
-  VpceDnsLookup:
-    Type: Custom::VpceDnsLookup
-    Properties:
-      ServiceToken: !GetAtt VpceDnsLookupFunction.Arn
-      VpcId: !Ref EndpointVpcId
-      # Cache-buster: change this value to force Lambda re-invocation on stack update.
-      # CloudFormation only re-invokes custom resources when properties change.
-      EndpointList: ssm,ssmmessages,ec2messages,sts,ecr.api,ecr.dkr,logs,ecs,ecs-agent,ecs-telemetry,execute-api
 
   # ============================================================
   # Service Networks: one per environment
@@ -448,7 +386,7 @@ Resources:
 
   # ============================================================
   # Resource Configurations: 11 endpoint RCs (the egress proxy RC is defined in squid-egress-proxy.yaml)
-  # VPCE DNS names resolved dynamically from VpceDnsLookup
+  # VPCE DNS names read from SSM (published natively by network-foundation.yaml)
   # ============================================================
 
   SsmResourceConfig:
@@ -463,7 +401,7 @@ Resources:
       ProtocolType: TCP
       ResourceConfigurationDefinition:
         DnsResource:
-          DomainName: !GetAtt VpceDnsLookup.ssm
+          DomainName: !Ref SsmVpceDns
           IpAddressType: IPV4
       Tags:
         - Key: Name
@@ -502,7 +440,7 @@ Resources:
       ProtocolType: TCP
       ResourceConfigurationDefinition:
         DnsResource:
-          DomainName: !GetAtt VpceDnsLookup.ssmmessages
+          DomainName: !Ref SsmMessagesVpceDns
           IpAddressType: IPV4
       Tags:
         - Key: Name
@@ -542,7 +480,7 @@ Resources:
       ProtocolType: TCP
       ResourceConfigurationDefinition:
         DnsResource:
-          DomainName: !GetAtt VpceDnsLookup.ec2messages
+          DomainName: !Ref Ec2MessagesVpceDns
           IpAddressType: IPV4
       Tags:
         - Key: Name
@@ -582,7 +520,7 @@ Resources:
       ProtocolType: TCP
       ResourceConfigurationDefinition:
         DnsResource:
-          DomainName: !GetAtt VpceDnsLookup.sts
+          DomainName: !Ref StsVpceDns
           IpAddressType: IPV4
       Tags:
         - Key: Name
@@ -622,7 +560,7 @@ Resources:
       ProtocolType: TCP
       ResourceConfigurationDefinition:
         DnsResource:
-          DomainName: !GetAtt VpceDnsLookup.ecr_api
+          DomainName: !Ref EcrApiVpceDns
           IpAddressType: IPV4
       Tags:
         - Key: Name
@@ -662,7 +600,7 @@ Resources:
       ProtocolType: TCP
       ResourceConfigurationDefinition:
         DnsResource:
-          DomainName: !GetAtt VpceDnsLookup.ecr_dkr
+          DomainName: !Ref EcrDkrVpceDns
           IpAddressType: IPV4
       Tags:
         - Key: Name
@@ -702,7 +640,7 @@ Resources:
       ProtocolType: TCP
       ResourceConfigurationDefinition:
         DnsResource:
-          DomainName: !GetAtt VpceDnsLookup.logs
+          DomainName: !Ref LogsVpceDns
           IpAddressType: IPV4
       Tags:
         - Key: Name
@@ -742,7 +680,7 @@ Resources:
       ProtocolType: TCP
       ResourceConfigurationDefinition:
         DnsResource:
-          DomainName: !GetAtt VpceDnsLookup.ecs
+          DomainName: !Ref EcsVpceDns
           IpAddressType: IPV4
       Tags:
         - Key: Name
@@ -782,7 +720,7 @@ Resources:
       ProtocolType: TCP
       ResourceConfigurationDefinition:
         DnsResource:
-          DomainName: !GetAtt VpceDnsLookup.ecs_agent
+          DomainName: !Ref EcsAgentVpceDns
           IpAddressType: IPV4
       Tags:
         - Key: Name
@@ -822,7 +760,7 @@ Resources:
       ProtocolType: TCP
       ResourceConfigurationDefinition:
         DnsResource:
-          DomainName: !GetAtt VpceDnsLookup.ecs_telemetry
+          DomainName: !Ref EcsTelemetryVpceDns
           IpAddressType: IPV4
       Tags:
         - Key: Name
@@ -862,7 +800,7 @@ Resources:
       ProtocolType: TCP
       ResourceConfigurationDefinition:
         DnsResource:
-          DomainName: !GetAtt VpceDnsLookup.execute_api
+          DomainName: !Ref ExecuteApiVpceDns
           IpAddressType: IPV4
       Tags:
         - Key: Name
@@ -914,7 +852,7 @@ Outputs:
     Value: !GetAtt EndpointResourceGateway.Id
   SsmVpceDns:
     Description: SSM VPC Endpoint DNS name resolved by Lambda
-    Value: !GetAtt VpceDnsLookup.ssm
+    Value: !Ref SsmVpceDns
   StsVpceDns:
     Description: STS VPC Endpoint DNS name resolved by Lambda
-    Value: !GetAtt VpceDnsLookup.sts
+    Value: !Ref StsVpceDns
