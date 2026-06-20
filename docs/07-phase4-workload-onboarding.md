@@ -10,7 +10,7 @@ That one association is the whole onboarding action. With `PrivateDnsEnabled` se
 
 This phase depends on Phase 1 directly and benefits from Phases 2 and 3. The dependency is concrete (this satisfies the deployment-order rationale in requirements 4.4 and 4.2):
 
-- **It requires Phase 1.** The association attaches the workload VPC to a Service Network that must already exist *and* must already be RAM-shared to the workload account's OU. A custom resource in this stack looks the network up **by name**; if Phase 1 has not run, or the RAM share has not reached this account's OU, the lookup fails fast with a message telling you to accept the share. A workload account cannot associate to, or even discover, a network that has not been created and shared to its OU.
+- **It requires Phase 1.** The association attaches the workload VPC to a Service Network that must already exist *and* must already be RAM-shared to the workload account's OU. The service network ID is passed in as a parameter; if Phase 1 has not run, or the RAM share has not reached this account's OU, that ID is not valid in the account and the association fails. A workload account cannot associate to, or even discover, a network that has not been created and shared to its OU.
 - **It benefits from Phases 2 and 3.** The association is what makes the shared endpoints and the egress proxy *usable* from the workload. Once associated with private DNS, the workload resolves the endpoint domains (Phase 2) and the `squid-proxy.egress.internal` proxy domain (Phase 3) to Lattice IPs. If you associate before Phases 2 and 3 have run, the association still succeeds, but there is nothing yet behind those domains to resolve. In practice you complete Phases 2 and 3 first so that the moment a workload onboards, the connectivity it resolves is already live.
 
 Unlike the earlier phases, **this phase deploys to the workload account, not the Network account.** It is the only phase that runs outside the Network account, and it is the phase you run repeatedly, once per workload account (or, with the automation in [Step 4](#step-4--automate-onboarding-across-many-accounts), once per fleet, applied automatically to every account in scope).
@@ -23,7 +23,7 @@ Unlike the earlier phases, **this phase deploys to the workload account, not the
 | Region | `us-east-2` (adjust if you deploy elsewhere) |
 | Depends on | [Phase 1: Foundation](04-phase1-foundation.md), the Service Network must exist and be RAM-shared to this account's OU |
 | Benefits from | [Phase 2: Shared Endpoints](05-phase2-shared-endpoints.md) and [Phase 3: Centralized Egress](06-phase3-centralized-egress.md), the domains the workload resolves after association |
-| Resources created | 1 lookup Lambda + role (custom resource), 1 `ServiceNetworkVpcAssociation` (with `PrivateDnsEnabled`) |
+| Resources created | 1 `ServiceNetworkVpcAssociation` (with `PrivateDnsEnabled`) and, on the CDK StackSet path, 1 workload egress security group (to the Lattice prefix list). No Lambda. |
 | Created automatically by Lattice | Private Hosted Zones for every associated Resource Configuration domain |
 | Deployed how | Once per account, manually for a single account, or via **StackSets / CDK Pipelines** at fleet scale |
 
@@ -33,27 +33,20 @@ Everything in this phase deploys into a workload account. The management account
 
 The global prerequisites in [Prerequisites](02-prerequisites.md) must be satisfied. The items below are the ones this phase depends on directly. Confirm them before you deploy into a workload account:
 
-- [ ] **Phase 1 is complete**, and the Service Network for this account's environment exists in the Network account with a known **name** (for example `sn-dev-shared`). You pass this name into the stack; it is resolved to an ID at deploy time.
+- [ ] **Phase 1 is complete**, and the Service Network for this account's environment exists in the Network account with a known **ID** (and a name, used for the association tag). You pass the **ID** in as a parameter; it is identical in every account that received the RAM share.
 - [ ] **The RAM share has reached this account's OU.** Because `aws ram enable-sharing-with-aws-organization` was enabled in Phase 1, accounts in a targeted OU **auto-accept** the Service Network share, there is no manual invitation to accept (see [Step 4](#ram-share-auto-accept-with-aws-organizations)). The account must be in an OU that the environment's share targets.
-- [ ] **The workload VPC exists and its ID is published to an SSM parameter** under the LZA `/accelerator/...` path (for example `/accelerator/network/vpc/Workload-Dev/id`). The stack resolves the VPC ID from this path rather than hardcoding it.
-- [ ] **Deployment IAM capability in the workload account** to create an IAM role and Lambda function (the lookup custom resource), and a VPC Lattice `ServiceNetworkVpcAssociation`; and to read the `/accelerator/*` SSM parameters and call `vpc-lattice:ListServiceNetworks`. (CDK path additionally requires `cdk bootstrap` in the workload account and Region; StackSets requires the StackSet execution role.)
+- [ ] **The workload VPC exists and its ID is published to an SSM parameter** (the foundation stack publishes it at `/netfabric/workload/dev-vpc/id`; an existing landing zone can publish it under its own prefix, for example LZA's `/accelerator/network/vpc/Workload-Dev/id`). The template resolves the VPC ID natively from this path via `AWS::SSM::Parameter::Value` rather than hardcoding it.
+- [ ] **Deployment IAM capability in the workload account** to create a VPC Lattice `ServiceNetworkVpcAssociation` and a security group, and to read the workload VPC ID SSM parameter (`ssm:GetParameter`). No Lambda or `vpc-lattice:ListServiceNetworks` permission is needed. (Service-managed StackSets use the managed StackSet execution role; the CDK path additionally requires `cdk bootstrap` where applicable.)
 - [ ] **Phases 2 and 3 are deployed** in the Network account if you want the workload to resolve endpoints and the proxy immediately on association (recommended, but not required for the association itself to succeed).
 
-## Step 1, Resolve the VPC ID and Service Network by name (Lambda custom resource)
+## Step 1, Resolve the identifiers natively (no Lambda)
 
-The association needs two identifiers that are not known until deploy time and differ per account: the **workload VPC ID** and the **Service Network ID**. Hardcoding either would break the parameterization the pattern depends on (requirement 5.4), so both IaC variants resolve them at deploy time with a small **Lambda-backed custom resource**. Given two inputs, an SSM path and a Service Network *name*, it returns two outputs, the VPC ID and the Service Network ID.
+The association needs two identifiers that are not known until deploy time and differ per account: the **workload VPC ID** and the **Service Network ID**. Hardcoding either would break the parameterization the pattern depends on (requirement 5.4). The reference resolves both **without any Lambda or custom resource**:
 
-The Lambda does two lookups:
+- **Workload VPC ID, native SSM resolution.** The template declares the VPC ID parameter as `AWS::SSM::Parameter::Value<AWS::EC2::VPC::Id>` with the SSM path as its default. CloudFormation reads that parameter in each target account at deploy time and substitutes the account's own VPC ID, so the same template works unchanged across every account in an OU.
+- **Service Network ID, passed as a parameter.** Because each environment maps to exactly one RAM-shared Service Network, and a shared resource has the **same ID in every account that receives the share**, the Service Network ID is passed directly as a stack parameter rather than looked up. There is no need to enumerate networks or resolve a name at deploy time.
 
-1. **VPC ID from SSM.** It calls `ssm:GetParameter` on the supplied path (for example `/accelerator/network/vpc/Workload-Dev/id`) and returns the value as `VpcId`.
-2. **Service Network ID by name.** It calls `vpc-lattice:ListServiceNetworks` (using a paginator, so it works regardless of how many networks are visible) and scans for the network whose `name` matches the supplied `ServiceNetworkName`. On a match it returns `ServiceNetworkId` (and `ServiceNetworkArn`). **If no match is found, it fails with a clear, actionable message**, on the CDK path it raises `ValueError("Service network '<name>' not found. Ensure the RAM share has been accepted in this account.")`. That message is the single most useful diagnostic in this phase: a "not found" almost always means the RAM share has not reached this account's OU, not that the name is wrong.
-
-The lookup runs on a **Python 3 runtime** and handles the CloudFormation custom-resource lifecycle correctly, including a **`Delete` no-op** (returning success immediately so stack deletion is clean). The two IaC paths implement the same logic with the standard mechanism for each tool:
-
-- **CDK** wraps the inline handler in a `cr.Provider` (the CDK custom-resource provider framework), which manages the CloudFormation response protocol for you.
-- **CloudFormation** uses an inline handler that sends the response itself with `urllib3` via a small `send_cfn` helper (no external dependencies), following the standard custom-resource response pattern (requirement 5.6).
-
-Both paths grant the Lambda a tightly scoped **LookupRole**: the AWS-managed `AWSLambdaBasicExecutionRole` for CloudWatch Logs, plus an inline policy allowing exactly two actions, `ssm:GetParameter` scoped to `arn:aws:ssm:<region>:<account>:parameter/accelerator/*`, and `vpc-lattice:ListServiceNetworks` on `*` (this action does not support resource-level permissions, so the wildcard is required). The CDK stack carries documented `cdk-nag` suppressions that record exactly these justifications, `AwsSolutions-IAM4` for the managed execution-role policy, and `AwsSolutions-IAM5` for the `/accelerator/*` path prefix and the unavoidable `ListServiceNetworks` wildcard, so the broad-looking grants are explained rather than silent.
+This is why there is no lookup Lambda on either path: the two values are either resolved by CloudFormation natively (`AWS::SSM::Parameter::Value`) or supplied as a parameter, so there is no `ssm:GetParameter` Lambda, no `vpc-lattice:ListServiceNetworks` call, and no custom-resource role to secure. The two preconditions on the operator are simply that the **RAM share has reached the account's OU** (so the Service Network ID is valid in that account) and that the **VPC ID is published to the SSM path** (the foundation stack does this; an existing landing zone can publish it under its own prefix, in which case you point the parameter at that path).
 
 ## Step 2, Create the VPC association with PrivateDnsEnabled
 
@@ -66,8 +59,8 @@ The property that makes onboarding "one action" is **`PrivateDnsEnabled: true`**
 VpcAssociation:
   Type: AWS::VpcLattice::ServiceNetworkVpcAssociation
   Properties:
-    ServiceNetworkIdentifier: !GetAtt ResourceLookup.ServiceNetworkId
-    VpcIdentifier: !GetAtt ResourceLookup.VpcId
+    ServiceNetworkIdentifier: !Ref ServiceNetworkId
+    VpcIdentifier: !Ref WorkloadVpcId
     PrivateDnsEnabled: true
     DnsOptions:
       PrivateDnsPreference: ALL_DOMAINS
@@ -76,30 +69,21 @@ VpcAssociation:
         Value: !Sub 'lattice-vpc-assoc-${ServiceNetworkName}'
 ```
 
-**`PrivateDnsPreference: ALL_DOMAINS`** instructs Lattice to manage private DNS resolution for *all* of the custom domains associated with the network, every endpoint RC plus the egress proxy RC, rather than a narrower subset. For this pattern that is exactly what you want: a workload should resolve the full set of shared endpoints and the proxy through Lattice the moment it associates, so `ALL_DOMAINS` is the correct preference.
+**`PrivateDnsPreference: ALL_DOMAINS`** instructs Lattice to manage private DNS resolution for *all* of the custom domains associated with the network, every endpoint RC with the egress proxy RC, rather than a narrower subset. For this pattern that is exactly what you want: a workload should resolve the full set of shared endpoints and the proxy through Lattice the moment it associates, so `ALL_DOMAINS` is the correct preference.
 
-### A real difference between the two IaC paths for PrivateDnsEnabled
+### Both IaC paths enable private DNS the same way
 
-Be careful here, because the CDK and CloudFormation paths are **not** equivalent on this exact property as the reference code is written:
+The CDK and CloudFormation paths are equivalent on this property. Both set **`PrivateDnsEnabled: true`** together with **`DnsOptions: PrivateDnsPreference: ALL_DOMAINS`** directly on the association resource. On the CDK path the association is defined inside the StackSet's inline template (the CDK stack is a `CfnStackSet`, not a per-account `CfnServiceNetworkVpcAssociation`), so the same property set reaches every target account. There is no post-deployment CLI step and no version-dependent caveat: deploy either path and private DNS is on.
 
-- The **CloudFormation template sets `PrivateDnsEnabled: true` together with `DnsOptions: PrivateDnsPreference: ALL_DOMAINS` directly on the association.** It is the more complete reference for this behavior, deploy it and private DNS is on.
-- The **CDK stack creates the same `CfnServiceNetworkVpcAssociation`** (`serviceNetworkIdentifier`, `vpcIdentifier`, and a `Name` tag), **but as written it does not set `PrivateDnsEnabled` in the L1 props.** An in-code comment is explicit about this: `PrivateDnsEnabled` is configured at the API level and must be applied either via the property *if your `aws-cdk-lib` version supports it*, or via a custom resource / CLI **after** deployment:
+The CDK StackSet template also creates a small **workload security group** whose only rules are egress to the VPC Lattice managed prefix list on TCP 443 (shared endpoints) and TCP 3128 (egress proxy). Without that egress rule, traffic to the Lattice-managed IPs is dropped and connections time out, so it is part of the association unit. (On the standalone CloudFormation template the workload VPC must already permit that egress, or you add an equivalent rule.)
 
-  ```bash
-  aws vpc-lattice update-service-network-vpc-association \
-    --service-network-vpc-association-identifier <association-id> \
-    --private-dns-enabled
-  ```
-
-Do not assume the CDK stack turns on private DNS by itself. On the CDK path you must **explicitly ensure `PrivateDnsEnabled` is applied**, add it to the `CfnServiceNetworkVpcAssociation` props if your CDK version exposes it, or run the post-deploy CLI (or wrap it in a custom resource). If you skip this on the CDK path, the association will exist but the workload will **not** get the Lattice-managed PHZs, and AWS service domains will not resolve to Lattice IPs.
-
-| Aspect | CloudFormation (`vpc-lattice-workload-vpc-association.yaml`) | CDK (`WorkloadAssociationStack`) |
-|--------|--------------------------------------------------------------|----------------------------------|
-| Association resource | `AWS::VpcLattice::ServiceNetworkVpcAssociation` | `cdk.aws_vpclattice.CfnServiceNetworkVpcAssociation` |
-| `PrivateDnsEnabled` | **`true`, set directly on the resource** | **Not set in the L1 props as written**, apply via prop (if supported) or post-deploy CLI/custom resource |
-| `DnsOptions` | `PrivateDnsPreference: ALL_DOMAINS` | Apply alongside `PrivateDnsEnabled` when you enable it |
-| Name tag | `lattice-vpc-assoc-${ServiceNetworkName}` | `lattice-vpc-assoc-${serviceNetworkName}` |
-| Treat as | Authoritative reference for `PrivateDnsEnabled` | Verify/enable `PrivateDnsEnabled` explicitly before relying on DNS |
+| Aspect | CloudFormation (`vpc-lattice-workload-vpc-association.yaml`) | CDK (`WorkloadAssociationStackSetStack`) |
+|--------|--------------------------------------------------------------|------------------------------------------|
+| Deployment unit | Standalone template (deploy directly or wrap in a StackSet) | A `CfnStackSet` that carries the association template inline |
+| Association resource | `AWS::VpcLattice::ServiceNetworkVpcAssociation` | Same, in the inline StackSet template |
+| `PrivateDnsEnabled` | `true`, set directly on the resource | `true`, set directly on the resource |
+| `DnsOptions` | `PrivateDnsPreference: ALL_DOMAINS` | `PrivateDnsPreference: ALL_DOMAINS` |
+| Workload egress SG | Not created (workload VPC must already permit egress to the Lattice prefix list) | Created inline (egress to the Lattice prefix list on 443/3128) |
 
 ## Step 3, DNS resolution behavior after association
 
@@ -118,33 +102,37 @@ For a single account you deploy the stack once. At fleet scale, 50, 150, 500, or
 
 ### Approach A, CloudFormation StackSets
 
-Deploy `cloudformation/vpc-lattice-workload-vpc-association.yaml` as a **StackSet with service-managed permissions**, targeting the OUs that make up an environment. Service-managed StackSets integrate with AWS Organizations and support **automatic deployment to new accounts** added to the target OUs, so a freshly vended dev account automatically receives the association stack, with no manual step. Each account instance is parameterized with that environment's `VpcSsmPath` and `ServiceNetworkName`.
+Deploy `cloudformation/vpc-lattice-workload-vpc-association.yaml` as a **StackSet with service-managed permissions**, targeting the OUs that make up an environment. Service-managed StackSets integrate with AWS Organizations and support **automatic deployment to new accounts** added to the target OUs, so a freshly vended dev account automatically receives the association stack, with no manual step. Each account instance is parameterized with that environment's `WorkloadVpcId` SSM path, `ServiceNetworkId`, and `ServiceNetworkName`.
 
-Because one environment maps to one Service Network name, you create **one StackSet (or one set of stack instances) per environment**, each targeting that environment's OUs and passing the matching `ServiceNetworkName` (for example `sn-dev-shared` for the dev OUs, `sn-stage-shared` for stage, `sn-prod-shared` for prod).
+Because one environment maps to one Service Network name, you create **one StackSet (or one set of stack instances) per environment**, each targeting that environment's OUs and passing the matching `ServiceNetworkName` (for example `sn-dev-shared` for the dev OUs, `sn-test-shared` for test, `sn-prod-shared` for prod).
 
 ### Approach B, CDK Pipelines / cdk-stacksets
 
 Deploy `WorkloadAssociationStack` across accounts from a **CDK Pipelines** pipeline (or with the `cdk-stacksets` library, which wraps StackSets in CDK constructs). The pipeline instantiates the stack per target account with the right props. As shown in `cdk/bin/app.ts`, a single instantiation looks like this:
 
 ```typescript
-// cdk/bin/app.ts, one workload account (dev)
-new WorkloadAssociationStack(app, 'WorkloadAssociationStack', {
-  env,
-  description: 'Associates a workload VPC with its VPC Lattice service network',
-  vpcSsmPath: '/accelerator/network/vpc/Workload-Dev/id',
+// cdk/bin/app.ts, service-managed StackSet targeting the dev OU (from the management account)
+new WorkloadAssociationStackSetStack(app, 'WorkloadAssociationStackSetStack', {
+  env: managementEnv,
+  description: 'Associates workload OU VPCs with the VPC Lattice service network',
+  targetOuIds: ['ou-EXAMPLE-dev0000'],
+  serviceNetworkId: 'sn-EXAMPLEdev0000000',
   serviceNetworkName: 'sn-dev-shared',
+  workloadVpcSsmPath: '/netfabric/workload/dev-vpc/id',
+  latticePrefixListId: 'pl-EXAMPLE0000000000',
+  regions: ['us-east-2'],
 });
 ```
 
-To onboard a fleet, the pipeline iterates target accounts and stamps out one stack per account, **mapping each account to the correct `serviceNetworkName` for its environment**, `sn-dev-shared` for dev accounts, `sn-stage-shared` for stage, `sn-prod-shared` for prod. The mapping of account → environment → Service Network name is the one piece of per-account configuration you must get right; everything else (VPC ID, network ID) is resolved at deploy time by the custom resource.
+To onboard a fleet, point the StackSet at each environment's OUs and pass the matching `serviceNetworkId`, the dev service network for the dev OUs, test for test, prod for prod. The mapping of OU to environment to Service Network is the one piece of configuration you must get right; the workload VPC ID is resolved at deploy time by CloudFormation from the SSM parameter.
 
 | Dimension | CloudFormation StackSets | CDK Pipelines / cdk-stacksets |
 |-----------|--------------------------|-------------------------------|
-| Template / stack | `vpc-lattice-workload-vpc-association.yaml` | `WorkloadAssociationStack` |
+| Template / stack | `vpc-lattice-workload-vpc-association.yaml` | `WorkloadAssociationStackSetStack` (a `CfnStackSet`) |
 | Org integration | Service-managed permissions + Organizations | Via pipeline accounts or `cdk-stacksets` |
 | Auto-onboard new accounts | **Yes**, automatic deployment to new accounts in target OUs | Via pipeline trigger or StackSet auto-deployment |
-| Per-account inputs | `VpcSsmPath`, `ServiceNetworkName` parameters | `vpcSsmPath`, `serviceNetworkName` props |
-| Environment mapping | One StackSet (or instance set) per environment's OUs | One stack per account, set `serviceNetworkName` per env |
+| Inputs | `WorkloadVpcId`, `ServiceNetworkId`, `ServiceNetworkName` parameters | `targetOuIds`, `serviceNetworkId`, `serviceNetworkName`, `workloadVpcSsmPath` props |
+| Environment mapping | One StackSet (or instance set) per environment's OUs | One StackSet per environment's OUs, with that environment's `serviceNetworkId` |
 | Best when | You standardize on CloudFormation and want native Organizations auto-deploy | You standardize on CDK and want type-safe, composable pipelines |
 
 ### RAM share auto-accept with AWS Organizations
@@ -155,7 +143,7 @@ Both approaches depend on the workload account already being able to *see* the S
 aws ram enable-sharing-with-aws-organization
 ```
 
-With organization-wide RAM sharing enabled, any account in an OU that a Service Network share targets **auto-accepts** that share, there is no manual RAM invitation to accept in each workload account. The practical effect for onboarding: the association can be created the moment the stack runs, because the network is already visible (and the lookup Lambda's `ListServiceNetworks` call returns it). The two prerequisites for auto-accept are therefore: **(1)** organization sharing is enabled (Phase 1), and **(2)** the account lives in an OU that the environment's share targets. If a deployment fails with "Service network '<name>' not found," check those two conditions first, it almost always means the account is outside the shared OU or the share has not propagated yet.
+With organization-wide RAM sharing enabled, any account in an OU that a Service Network share targets **auto-accepts** that share, there is no manual RAM invitation to accept in each workload account. The practical effect for onboarding: the association can be created the moment the stack runs, because the network is already visible (its RAM-shared ID is valid in the account). The two prerequisites for auto-accept are therefore: **(1)** organization sharing is enabled (Phase 1), and **(2)** the account lives in an OU that the environment's share targets. If a deployment fails to create the association, check those two conditions first, it almost always means the account is outside the shared OU or the share has not propagated yet.
 
 ## End-to-end onboarding flow
 
@@ -163,19 +151,19 @@ Putting the pieces together, here is the full flow from a brand-new account to w
 
 1. **A new account is vended** into the correct OU, for example by AWS Control Tower / Landing Zone Accelerator (LZA) Account Factory placing it in a dev OU.
 2. **The RAM share auto-accepts.** Because organization sharing is enabled and the account is in a targeted OU, the dev Service Network share is accepted automatically; the network becomes visible in the account.
-3. **LZA publishes the VPC's SSM parameters.** The account's workload VPC ID (and related IDs) land under `/accelerator/network/vpc/.../id`.
+3. **The workload VPC ID is published to SSM.** The foundation stack (or your existing landing zone) publishes the account's workload VPC ID under the agreed path, for example `/netfabric/workload/dev-vpc/id`.
 4. **The StackSet or pipeline deploys the association stack** into the account, automatically, because the account joined a target OU (StackSet auto-deploy) or because the pipeline stamps it out.
-5. **The custom resource resolves identifiers.** The lookup Lambda reads the VPC ID from SSM and finds the Service Network ID by name via `ListServiceNetworks`.
-6. **The `ServiceNetworkVpcAssociation` is created with `PrivateDnsEnabled`** (set directly on the CloudFormation path; explicitly applied on the CDK path).
+5. **CloudFormation resolves the identifiers natively.** It reads the workload VPC ID from the SSM parameter (`AWS::SSM::Parameter::Value`); the service network ID is supplied as a stack parameter. No Lambda runs.
+6. **The `ServiceNetworkVpcAssociation` is created with `PrivateDnsEnabled`** (set directly on both paths), along with the workload egress security group to the Lattice prefix list.
 7. **Lattice creates the Private Hosted Zones** for every Resource Configuration domain on the network and attaches them to the workload VPC.
 8. **The workload has full connectivity.** It resolves the AWS service endpoints (Phase 2) and the egress proxy (Phase 3) to Lattice IPs and can call AWS services privately and reach the internet through the filtered proxy, with no per-account endpoints, NAT Gateways, or DNS zones to manage.
 
 ```mermaid
 flowchart TD
     A["New account vended into target OU<br/>(Control Tower / LZA Account Factory)"] --> B["RAM share auto-accepted<br/>(org sharing enabled + account in shared OU)"]
-    B --> C["LZA publishes workload VPC ID<br/>to /accelerator/.../id SSM param"]
+    B --> C["Workload VPC ID published<br/>to /netfabric/.../id SSM param"]
     C --> D["StackSet / CDK Pipeline deploys<br/>the association stack into the account"]
-    D --> E["Custom resource resolves:<br/>VPC ID (SSM) + Service Network ID (by name)"]
+    D --> E["CloudFormation resolves natively:<br/>VPC ID (SSM param) + Service Network ID (stack param)"]
     E --> F["ServiceNetworkVpcAssociation created<br/>with PrivateDnsEnabled"]
     F --> G["Lattice creates Private Hosted Zones<br/>for all RC domains"]
     G --> H["Workload resolves endpoints + proxy<br/>to Lattice IPs, full connectivity"]
@@ -187,72 +175,47 @@ This phase corresponds to one CDK stack and one CloudFormation template, each de
 
 ### CDK path
 
-The stack is `WorkloadAssociationStack` in `cdk/lib/workload-association-stackset-stack.ts`. Its props are just the two per-account inputs:
+The stack is `WorkloadAssociationStackSetStack` in `cdk/lib/workload-association-stackset-stack.ts`. It is a **service-managed `CfnStackSet`**, deployed from the management (or delegated-admin) account, that carries the association template inline and rolls it out to the target OUs with auto-deployment to new accounts. There is no Lambda. Its props are:
 
 ```typescript
-// props consumed by WorkloadAssociationStack
-vpcSsmPath: string;          // SSM path to the workload VPC ID, e.g. /accelerator/network/vpc/Workload-Dev/id
-serviceNetworkName: string;  // RAM-shared Service Network name, e.g. sn-dev-shared
+// props consumed by WorkloadAssociationStackSetStack
+targetOuIds: string[];        // OUs to associate (and auto-deploy to new accounts in them)
+serviceNetworkId: string;     // the RAM-shared service network ID (identical in every account)
+serviceNetworkName: string;   // used for the association Name tag
+workloadVpcSsmPath: string;   // e.g. /netfabric/workload/dev-vpc/id (resolved natively per account)
+latticePrefixListId: string;  // com.amazonaws.<region>.vpc-lattice managed prefix list
+regions: string[];
 ```
 
-The stack defines the scoped lookup role, the inline lookup Lambda, and a `cr.Provider` that fronts it:
+The inline template resolves the workload VPC ID natively (`AWS::SSM::Parameter::Value<AWS::EC2::VPC::Id>`), takes the service network ID as a parameter, and creates the association plus a workload egress security group. `PrivateDnsEnabled: true` and `DnsOptions: PrivateDnsPreference: ALL_DOMAINS` are set directly on the association, no Lambda, no post-deploy CLI:
 
 ```typescript
-// cdk/lib/workload-association-stackset-stack.ts, lookup Lambda + provider
-const lookupFn = new lambda.Function(this, 'LookupFunction', {
-  runtime: lambda.Runtime.PYTHON_3_14, // current Python 3 runtime in the reference
-  handler: 'index.handler',
-  timeout: cdk.Duration.seconds(30),
-  role: lookupRole,
-  code: lambda.Code.fromInline(`...resolve VpcId from SSM; find Service Network by name;
-    raise ValueError("Service network '...' not found. Ensure the RAM share has been
-    accepted in this account.") if missing; Delete = no-op...`),
-});
-
-const provider = new cr.Provider(this, 'LookupProvider', { onEventHandler: lookupFn });
-
-const lookup = new cdk.CustomResource(this, 'ResourceLookup', {
-  serviceToken: provider.serviceToken,
-  properties: { SsmPath: props.vpcSsmPath, ServiceNetworkName: props.serviceNetworkName },
-});
+// cdk/lib/workload-association-stackset-stack.ts, the association (inside the inline StackSet template)
+VpcAssociation: {
+  Type: 'AWS::VpcLattice::ServiceNetworkVpcAssociation',
+  Properties: {
+    ServiceNetworkIdentifier: { Ref: 'ServiceNetworkId' },
+    VpcIdentifier: { Ref: 'WorkloadVpcId' },          // AWS::SSM::Parameter::Value, resolved per account
+    PrivateDnsEnabled: true,
+    DnsOptions: { PrivateDnsPreference: 'ALL_DOMAINS' },
+    Tags: [{ Key: 'Name', Value: { 'Fn::Sub': 'lattice-vpc-assoc-${ServiceNetworkName}' } }],
+  },
+},
 ```
 
-It then creates the association from the resolved IDs. Note the comment block that documents the `PrivateDnsEnabled` handling described in [Step 2](#a-real-difference-between-the-two-iac-paths-for-privatednsenabled):
-
-```typescript
-// cdk/lib/workload-association-stackset-stack.ts, the association
-const vpcAssociation = new cdk.aws_vpclattice.CfnServiceNetworkVpcAssociation(
-  this, 'VpcAssociation', {
-    serviceNetworkIdentifier: lookup.getAttString('ServiceNetworkId'),
-    vpcIdentifier: lookup.getAttString('VpcId'),
-    tags: [{ key: 'Name', value: `lattice-vpc-assoc-${props.serviceNetworkName}` }],
-  }
-);
-
-// PrivateDnsEnabled is NOT set in the L1 props as written. Apply it via the prop
-// (if your aws-cdk-lib version supports it) or post-deployment:
-//   aws vpc-lattice update-service-network-vpc-association \
-//     --service-network-vpc-association-identifier <id> --private-dns-enabled
-```
-
-The stack outputs `VpcAssociationId`, `ResolvedVpcId`, and `ResolvedServiceNetworkId`. Deploy a single dev account with:
+The stack instances output `VpcAssociationId`, `ResolvedVpcId`, `ServiceNetworkId`, and `WorkloadLatticeSecurityGroupId`. Deploy the StackSet from the management account with:
 
 ```bash
 cd cdk
-npx cdk deploy WorkloadAssociationStack \
-  -c region=us-east-2
-# vpcSsmPath and serviceNetworkName are set in app.ts (e.g. '/accelerator/network/vpc/Workload-Dev/id'
-# and 'sn-dev-shared'); for a fleet, instantiate one stack per account from a CDK Pipeline.
-
-# CDK path: ensure PrivateDnsEnabled is applied (if not set via the L1 prop)
-aws vpc-lattice update-service-network-vpc-association \
-  --service-network-vpc-association-identifier <association-id> \
-  --private-dns-enabled --region us-east-2
+npx cdk deploy WorkloadAssociationStackSetStack
+# targetOuIds, serviceNetworkId, serviceNetworkName, workloadVpcSsmPath, latticePrefixListId,
+# and regions are set in app.ts. The service-managed StackSet rolls out to the target OUs and
+# auto-deploys to new accounts. Private DNS is enabled by the template; there is no post-deploy step.
 ```
 
 ### CloudFormation path
 
-`cloudformation/vpc-lattice-workload-vpc-association.yaml` is the StackSet-deployable template. Its parameters are `VpcSsmPath` and `ServiceNetworkName`; it defines the same `LookupRole` / `LookupFunction` (here on the `python3.12` runtime, using an inline `urllib3` `send_cfn` handler that returns `FAILED` if the network is not found), a `Custom::ResourceLookup`, and the `VpcAssociation` shown in [Step 2](#step-2--create-the-vpc-association-with-privatednsenabled), which sets `PrivateDnsEnabled: true` and `DnsOptions: PrivateDnsPreference: ALL_DOMAINS` directly. It outputs `VpcAssociationId`, `ResolvedVpcId`, and `ResolvedServiceNetworkId`.
+`cloudformation/vpc-lattice-workload-vpc-association.yaml` is the StackSet-deployable template, and it uses no Lambda. Its parameters are `WorkloadVpcId` (typed `AWS::SSM::Parameter::Value<AWS::EC2::VPC::Id>`, resolved natively per account), `ServiceNetworkId`, and `ServiceNetworkName`. There is no lookup function or custom resource. It creates the `VpcAssociation` shown in [Step 2](#step-2-create-the-vpc-association-with-privatednsenabled), which sets `PrivateDnsEnabled: true` and `DnsOptions: PrivateDnsPreference: ALL_DOMAINS` directly. It outputs `VpcAssociationId`, `ResolvedVpcId`, and `ServiceNetworkId`.
 
 Deploy to a **single** workload account:
 
@@ -263,8 +226,10 @@ aws cloudformation deploy \
   --template-file cloudformation/vpc-lattice-workload-vpc-association.yaml \
   --capabilities CAPABILITY_IAM \
   --parameter-overrides \
-    VpcSsmPath=/accelerator/network/vpc/Workload-Dev/id \
-    ServiceNetworkName=sn-dev-shared
+    WorkloadVpcId=/netfabric/workload/dev-vpc/id \
+    ServiceNetworkId=sn-EXAMPLEdev0000000 \
+    ServiceNetworkName=sn-dev-shared \
+    LatticePrefixListId=pl-EXAMPLE0000000000
 ```
 
 Deploy to **many** accounts with a service-managed StackSet that auto-deploys to new accounts in the dev OUs:
@@ -278,8 +243,10 @@ aws cloudformation create-stack-set \
   --auto-deployment Enabled=true,RetainStacksOnAccountRemoval=false \
   --capabilities CAPABILITY_IAM \
   --parameters \
-    ParameterKey=VpcSsmPath,ParameterValue=/accelerator/network/vpc/Workload-Dev/id \
+    ParameterKey=WorkloadVpcId,ParameterValue=/netfabric/workload/dev-vpc/id \
+    ParameterKey=ServiceNetworkId,ParameterValue=sn-EXAMPLEdev0000000 \
     ParameterKey=ServiceNetworkName,ParameterValue=sn-dev-shared \
+    ParameterKey=LatticePrefixListId,ParameterValue=pl-EXAMPLE0000000000 \
   --region us-east-2
 
 # 2. Roll out to the dev OUs (replace with your dev OU IDs)
@@ -290,7 +257,7 @@ aws cloudformation create-stack-instances \
   --region us-east-2
 ```
 
-Repeat the StackSet per environment, substituting the matching `ServiceNetworkName` (`sn-stage-shared` for stage, `sn-prod-shared` for prod) and that environment's OU IDs. New accounts later vended into those OUs are onboarded automatically by the StackSet's auto-deployment.
+Repeat the StackSet per environment, substituting the matching `ServiceNetworkName` (`sn-test-shared` for test, `sn-prod-shared` for prod) and that environment's OU IDs. New accounts later vended into those OUs are onboarded automatically by the StackSet's auto-deployment.
 
 ## Expected outcome
 
@@ -333,9 +300,9 @@ Also check, in the console:
 
 - **VPC Lattice → Service networks → VPC associations**: the workload VPC listed, association **Active**, private DNS enabled.
 - **Route 53 → Hosted zones**: the Lattice-managed Private Hosted Zones for the endpoint domains and the `squid-proxy.egress.internal` domain, associated with the workload VPC.
-- **CloudFormation → the association stack → Outputs**: `VpcAssociationId`, `ResolvedVpcId`, and `ResolvedServiceNetworkId` populated with the expected values.
+- **CloudFormation → the association stack → Outputs**: `VpcAssociationId`, `ResolvedVpcId`, and `ServiceNetworkId` populated with the expected values.
 
-If the deployment failed at the custom resource with "Service network '<name>' not found," the network is not visible in this account, confirm the account is in an OU that the environment's RAM share targets and that organization sharing is enabled (see [Step 4](#ram-share-auto-accept-with-aws-organizations)).
+If the association fails to create because the service network is not visible in this account, confirm the account is in an OU that the environment's RAM share targets and that organization sharing is enabled (see [Step 4](#ram-share-auto-accept-with-aws-organizations)).
 
 With workloads onboarding through a single automated association, in-Region service access and egress are fully in place. The next phase opens the same shared fabric to consumers that live outside an associated VPC, external, on-premises, and cross-Region, through Service Network Endpoints.
 

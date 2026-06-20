@@ -4,7 +4,7 @@ The five implementation phases, [Phase 1: Foundation](04-phase1-foundation.md), 
 
 These are recommendations, not new resources. Most of them cost nothing to adopt on day one and a great deal to retrofit later, so apply them before you onboard your first wave of workload accounts rather than after.
 
-> **A note on conventions.** As elsewhere in this guide, examples use the `us-east-2` Region and placeholder identifiers (organization ID `o-EXAMPLE12345`, account `111111111111`). The reference IaC names the three Service Networks `sn-dev-shared` / `sn-stage-shared` / `sn-prod-shared` in both IaC paths; the recommendations below show why you should still pick a single org-wide prefix scheme rather than carrying the reference names into a real deployment.
+> **A note on conventions.** As elsewhere in this guide, examples use the `us-east-2` Region and placeholder identifiers (organization ID `o-EXAMPLE12345`, account `111111111111`). The reference IaC names the three Service Networks `sn-dev-shared` / `sn-test-shared` / `sn-prod-shared` in both IaC paths; the recommendations below show why you should still pick a single org-wide prefix scheme rather than carrying the reference names into a real deployment.
 
 ## Naming conventions
 
@@ -14,7 +14,7 @@ Names are the primary handle your teams, your automation, and your auth policies
 
 The two reference implementations in this guide both name service networks `sn-{env}-shared`, but that prefix is illustrative only. **Pick one prefix for your organization and use it everywhere**, across both IaC paths, all three environments, and every resource type. Mixing prefixes in the same org means the Phase 4 `serviceNetworkName` input has to track which prefix matches which network, which is exactly the kind of per-account special case the pattern is designed to eliminate.
 
-Choose a short, lowercase, organization-meaningful prefix (for example `net-`, or a program code), then keep the rest of the scheme below identical regardless of which prefix you land on.
+Choose a short, lowercase, organization-meaningful prefix (for example `net-`), then keep the rest of the scheme below identical regardless of which prefix you land on.
 
 ### Recommended naming patterns
 
@@ -43,7 +43,7 @@ Consistent names pay off in three concrete ways. They make resources **discovera
 
 ## Tagging strategy
 
-Naming tells you *what* a resource is; tagging tells you *who owns it, what it belongs to, and what it costs*. The reference IaC already tags each Service Network with `Environment` (`dev`/`stage`/`prod`), that single tag is the seed of a full strategy. We recommend you extend it into a small, mandatory tag set applied uniformly across every Lattice resource, the ECS/Fargate egress stack, and the workload associations, and that you enforce it through your IaC rather than by hand.
+Naming tells you *what* a resource is; tagging tells you *who owns it, what it belongs to, and what it costs*. The reference IaC already tags each Service Network with `Environment` (`dev`/`test`/`prod`), that single tag is the seed of a full strategy. We recommend you extend it into a small, mandatory tag set applied uniformly across every Lattice resource, the ECS/Fargate egress stack, and the workload associations, and that you enforce it through your IaC rather than by hand.
 
 ### Recommended tags
 
@@ -51,7 +51,7 @@ Keep the mandatory set small enough that every team will actually apply it. The 
 
 | Tag key | Purpose | Example values | Recommendation |
 |---------|---------|----------------|----------------|
-| `Environment` | Environment identification and isolation | `dev`, `stage`, `prod` | **Mandatory.** Already applied to Service Networks in the reference IaC; apply it to every Lattice resource, the Squid stack, and the workload association. |
+| `Environment` | Environment identification and isolation | `dev`, `test`, `prod` | **Mandatory.** Already applied to Service Networks in the reference IaC; apply it to every Lattice resource, the Squid stack, and the workload association. |
 | `CostCenter` | Cost allocation to a budget owner | `cc-1234` | **Mandatory.** Drives chargeback/showback in Cost Explorer. |
 | `Owner` | Accountable team or distribution list | `network-platform` | **Mandatory.** Who to contact; who owns the resource's lifecycle. |
 | `ManagedBy` | Provenance / which IaC owns it | `cdk`, `cloudformation` | **Mandatory.** Signals the resource is IaC-managed and which path to change it through, discourages console drift. |
@@ -63,7 +63,7 @@ Apply tags at the construct or template level so they propagate automatically. I
 
 Tags do not appear in your billing data until you turn them on. After you adopt the tag set, **activate the keys as cost allocation tags** in the AWS Billing and Cost Management console (Billing → Cost allocation tags → activate `Environment`, `CostCenter`, `Owner`, `Project`). Activation is a one-time, account-level step in the management/payer account, and it is only forward-looking, tags appear in cost data from activation onward, not retroactively, which is another reason to tag from day one.
 
-Once activated, the tags become grouping and filtering dimensions in Cost Explorer and AWS Budgets. The most useful view in this pattern is **cost by `Environment`**: because each Service Network is tagged `dev`/`stage`/`prod` and the per-association and per-Resource-Configuration charges flow from those networks, grouping Lattice spend by `Environment` gives you a clean per-environment breakdown of the shared fabric without any per-account math. Layer `CostCenter` on top to attribute that spend to budget owners, and `Project` to see the fabric's total cost, networks, gateways, RCs, the Fargate egress service, and data processing, as a single line. Because the egress proxy is centralized, its ECS/Fargate and data-transfer costs land in the Network account; tagging it with the same keys lets you report it alongside the rest of the fabric rather than losing it in the Network account's bill.
+Once activated, the tags become grouping and filtering dimensions in Cost Explorer and AWS Budgets. The most useful view in this pattern is **cost by `Environment`**: because each Service Network is tagged `dev`/`test`/`prod` and the per-association and per-Resource-Configuration charges flow from those networks, grouping Lattice spend by `Environment` gives you a clean per-environment breakdown of the shared fabric without any per-account math. Layer `CostCenter` on top to attribute that spend to budget owners, and `Project` to see the fabric's total cost, networks, gateways, RCs, the Fargate egress service, and data processing, as a single line. Because the egress proxy is centralized, its ECS/Fargate and data-transfer costs land in the Network account; tagging it with the same keys lets you report it alongside the rest of the fabric rather than losing it in the Network account's bill.
 
 ## Monitoring and observability
 
@@ -136,8 +136,8 @@ VPC Lattice enforces per-Region quotas that, in a large multi-account deployment
 How these map to this pattern, and where to watch:
 
 - **VPC associations per service network (≈500)** is the quota you are most likely to meet first, because onboarding adds one association per account *to a single environment's network*. With three environment networks, you have headroom for roughly 500 accounts **per environment** at the default, but if one environment's account count trends toward the limit, request an increase well ahead of time, since onboarding automation will otherwise start failing for that environment only.
-- **Service networks per Region (≈50)** comfortably accommodates the three networks this pattern uses (dev/stage/prod). You would approach it only if you fragment environments into many more networks, a reason to prefer OU-path scoping within three networks over proliferating networks.
-- **Resource Configurations per service network (≈500)** bounds how many endpoints plus the egress proxy you expose on one network. The reference exposes ~10-11 endpoints plus `squid-proxy-rc`, far under the limit, but track it if you add many more shared endpoints.
+- **Service networks per Region (≈50)** comfortably accommodates the three networks this pattern uses (dev/test/prod). You would approach it only if you fragment environments into many more networks, a reason to prefer OU-path scoping within three networks over proliferating networks.
+- **Resource Configurations per service network (≈500)** bounds how many endpoints with the egress proxy you expose on one network. The reference exposes ~10-11 endpoints + `squid-proxy-rc`, far under the limit, but track it if you add many more shared endpoints.
 - **Auth policy size (10 KB, not adjustable)** is the one hard limit to design around directly: it caps how many OU paths you can list in a Service Network's IAM auth policy. Keep policies compact, prefer broad OU-path prefixes with the `/*` suffix (as in [Phase 1](04-phase1-foundation.md)) over enumerating many narrow paths, so you never bump the ceiling.
 
 Most VPC Lattice quotas are **soft (adjustable)**: raise them through the **Service Quotas console** (open the quota and choose *Request increase at account level*), or through **AWS Support** for large capacity increases that the console flags as requiring it. A small number, auth policy size and security groups per association above, are **hard limits** you must design within. Request soft-quota increases *proactively*, before a rollout reaches the limit, because increases are not always granted instantly and a denied association fails the onboarding stack for that account.

@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   Centralized Squid forward proxy on ECS Fargate behind an internal Network Load
-  Balancer, exposed to all three VPC Lattice service networks (dev/stage/prod) via
+  Balancer, exposed to all three VPC Lattice service networks (dev/test/prod) via
   an egress Resource Gateway and the squid-proxy-rc Resource Configuration.
   CloudFormation equivalent of the CDK SquidEgressStack. Deployed to the Network
   account, into the Egress VPC. VPC/subnet IDs are resolved from SSM parameters.
@@ -26,7 +26,7 @@ Metadata:
           default: Service Networks (from core stack outputs)
         Parameters:
           - DevServiceNetworkId
-          - StageServiceNetworkId
+          - TestServiceNetworkId
           - ProdServiceNetworkId
       - Label:
           default: Squid proxy configuration
@@ -43,22 +43,22 @@ Metadata:
 Parameters:
   EgressVpcId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::VPC::Id>
-    Default: /apg-lattice/network/egress-vpc/id
+    Default: /netfabric/network/egress-vpc/id
     Description: SSM parameter path for the Egress VPC ID
 
   EgressVpcCidr:
     Type: AWS::SSM::Parameter::Value<String>
-    Default: /apg-lattice/network/egress-vpc/cidr/ipv4
+    Default: /netfabric/network/egress-vpc/cidr/ipv4
     Description: SSM parameter path for the Egress VPC IPv4 CIDR (used for NLB health-check ingress)
 
   EgressSubnetAId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Subnet::Id>
-    Default: /apg-lattice/network/egress-vpc/subnet/a/id
+    Default: /netfabric/network/egress-vpc/subnet/a/id
     Description: SSM parameter path for Egress subnet A (AZ a)
 
   EgressSubnetBId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Subnet::Id>
-    Default: /apg-lattice/network/egress-vpc/subnet/b/id
+    Default: /netfabric/network/egress-vpc/subnet/b/id
     Description: SSM parameter path for Egress subnet B (AZ b)
 
   LatticePrefixListId:
@@ -71,9 +71,9 @@ Parameters:
     Description: Dev service network ID from the core stack (e.g. sn-EXAMPLEdev0000000)
     AllowedPattern: '^sn-[0-9a-z]{17}$'
 
-  StageServiceNetworkId:
+  TestServiceNetworkId:
     Type: String
-    Description: Stage service network ID from the core stack
+    Description: Test service network ID from the core stack
     AllowedPattern: '^sn-[0-9a-z]{17}$'
 
   ProdServiceNetworkId:
@@ -82,13 +82,13 @@ Parameters:
     AllowedPattern: '^sn-[0-9a-z]{17}$'
 
   ProxyImage:
-    Type: String
-    Default: ubuntu/squid:latest
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /netfabric/egress/squid-image-uri
     Description: >
-      Container image for the Squid proxy. Defaults to the public ubuntu/squid:latest
-      to keep the example self-contained. For production, build a pinned image with your
-      own squid.conf (reading ALLOWED_DOMAINS) and push it to Amazon ECR, then set this
-      to the immutable ECR tag.
+      SSM parameter path holding the Squid container image URI. Populated
+      automatically by the squid-image-build stack after a successful CodeBuild
+      run. Deploy squid-image-build.yaml and trigger the build before deploying
+      this stack.
 
   AllowedDomains:
     Type: String
@@ -99,9 +99,9 @@ Parameters:
 
   DesiredCount:
     Type: Number
-    Default: 2
+    Default: 3
     MinValue: 1
-    Description: Number of Fargate tasks (recommend at least one per AZ for availability)
+    Description: Number of Fargate tasks. Defaults to one per AZ (3) so each AZ has a local Squid target, which avoids cross-AZ data transfer and matches the one-NAT-per-AZ posture.
 
   TaskCpu:
     Type: String
@@ -269,28 +269,28 @@ Resources:
   ECSCluster:
     Type: AWS::ECS::Cluster
     Properties:
-      ClusterName: squid-egress-cluster
+      ClusterName: netfabric-squid-egress-cluster
       ClusterSettings:
         - Name: containerInsights
           Value: enabled
       Tags:
         - Key: Name
-          Value: squid-egress-cluster
+          Value: netfabric-squid-egress-cluster
 
   ProxyLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: /ecs/squid-egress-proxy
+      LogGroupName: /ecs/netfabric-squid-egress-proxy
       RetentionInDays: 30
       KmsKeyId: !GetAtt LogsKmsKey.Arn
       Tags:
         - Key: Name
-          Value: squid-egress-proxy-logs
+          Value: netfabric-squid-egress-proxy-logs
 
   TaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
-      Family: squid-egress-proxy
+      Family: netfabric-squid-egress-proxy
       Cpu: !Ref TaskCpu
       Memory: !Ref TaskMemory
       NetworkMode: awsvpc
@@ -333,7 +333,7 @@ Resources:
     Type: AWS::ECS::Service
     DependsOn: NLBListener
     Properties:
-      ServiceName: squid-egress-service
+      ServiceName: netfabric-squid-egress-service
       Cluster: !Ref ECSCluster
       TaskDefinition: !Ref TaskDefinition
       DesiredCount: !Ref DesiredCount
@@ -356,7 +356,7 @@ Resources:
           TargetGroupArn: !Ref TargetGroup
       Tags:
         - Key: Name
-          Value: squid-egress-service
+          Value: netfabric-squid-egress-service
 
   # ------------------------------------------------------------
   # Application Auto Scaling (optional, target-tracking on CPU)
@@ -485,20 +485,20 @@ Resources:
         - Key: Name
           Value: squid-proxy-rc-dev
 
-  SquidRCAssocStage:
+  SquidRCAssocTest:
     Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
     DependsOn: SquidRCAssocDev
     Properties:
-      ServiceNetworkId: !Ref StageServiceNetworkId
+      ServiceNetworkId: !Ref TestServiceNetworkId
       ResourceConfigurationId: !GetAtt SquidProxyResourceConfig.Id
       PrivateDnsEnabled: true
       Tags:
         - Key: Name
-          Value: squid-proxy-rc-stage
+          Value: squid-proxy-rc-test
 
   SquidRCAssocProd:
     Type: AWS::VpcLattice::ServiceNetworkResourceAssociation
-    DependsOn: SquidRCAssocStage
+    DependsOn: SquidRCAssocTest
     Properties:
       ServiceNetworkId: !Ref ProdServiceNetworkId
       ResourceConfigurationId: !GetAtt SquidProxyResourceConfig.Id

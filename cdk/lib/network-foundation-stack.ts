@@ -1,15 +1,25 @@
 import * as cdk from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
+import { NagSuppressions } from 'cdk-nag';
 import { Construct } from 'constructs';
 
 export interface NetworkFoundationStackProps extends cdk.StackProps {
   /** SSM namespace prefix under which VPC/subnet/SG IDs are published. */
   ssmPrefix?: string;
+  /** Single token that namespaces resource Name tags (e.g. '{prefix}-endpoint-vpc'). */
+  resourcePrefix?: string;
   /** Concrete AZ names to spread subnets across (3 for a customer-grade layout). */
   availabilityZoneNames?: string[];
   endpointVpcCidr?: string;
   egressVpcCidr?: string;
+  /** IPv4 CIDR for the Ingress VPC (home of the Service Network VPC Endpoint). */
+  ingressVpcCidr?: string;
+  /**
+   * Number of NAT gateways in the Egress VPC. Defaults to one per AZ (HA), the
+   * Well-Architected Reliability posture. Override to 1 for a cost-sensitive env.
+   */
+  egressNatGateways?: number;
 }
 
 /**
@@ -17,17 +27,22 @@ export interface NetworkFoundationStackProps extends cdk.StackProps {
  *
  * Provisions DEDICATED VPCs for the VPC Lattice reference architecture so the
  * guide does not depend on any pre-existing (e.g. Landing Zone Accelerator)
- * network. Two VPCs are created, each spanning THREE Availability Zones:
+ * network. Three VPCs are created, each spanning THREE Availability Zones, and
+ * every subnet is sized /22 to give VPC Lattice Resource Gateway and Service
+ * Network VPC Endpoint ENIs ample contiguous address space:
  *
  *   1. Endpoint VPC  - hosts interface VPC endpoints (SSM, STS, ECR, Logs, ECS...)
- *                      with Private DNS enabled, plus a dedicated subnet/SG tier
+ *                      with Private DNS enabled, along with a dedicated subnet/SG tier
  *                      for the VPC Lattice Resource Gateway.
  *   2. Egress VPC    - public + private(NAT-egress) subnets used by the Squid
- *                      Fargate proxy, plus a subnet/SG tier for the egress
+ *                      Fargate proxy, along with a subnet/SG tier for the egress
  *                      Resource Gateway.
+ *   3. Ingress VPC   - isolated subnets hosting the Service Network VPC Endpoints
+ *                      (SN-E, one per environment) for external/on-premises/
+ *                      cross-Region ingress (Phase 5).
  *
  * All identifiers consumed by the Lattice stacks are published to SSM under
- * `ssmPrefix` (default `/apg-lattice`) so the deliverable stacks resolve them
+ * `ssmPrefix` (default `/netfabric`) so the deliverable stacks resolve them
  * exactly like they would resolve LZA parameters.
  */
 export class NetworkFoundationStack extends cdk.Stack {
@@ -48,15 +63,17 @@ export class NetworkFoundationStack extends cdk.Stack {
       `${this.region}c`,
     ];
 
-    const prefix = props.ssmPrefix ?? '/apg-lattice';
-    const endpointVpcCidr = props.endpointVpcCidr ?? '10.80.0.0/16';
-    const egressVpcCidr = props.egressVpcCidr ?? '10.81.0.0/16';
+    const resourcePrefix = props.resourcePrefix ?? 'netfabric';
+    const prefix = props.ssmPrefix ?? `/${resourcePrefix}`;
+    const endpointVpcCidr = props.endpointVpcCidr ?? '10.5.0.0/16';
+    const egressVpcCidr = props.egressVpcCidr ?? '10.6.0.0/16';
+    const ingressVpcCidr = props.ingressVpcCidr ?? '10.8.0.0/16';
 
     // ----------------------------------------------------------------
     // Endpoint VPC: isolated subnets (no NAT) across 3 AZs
     // ----------------------------------------------------------------
     const endpointVpc = new ec2.Vpc(this, 'EndpointVpc', {
-      vpcName: 'apg-lattice-endpoint-vpc',
+      vpcName: `${resourcePrefix}-endpoint-vpc`,
       ipAddresses: ec2.IpAddresses.cidr(endpointVpcCidr),
       maxAzs: 3,
       natGateways: 0,
@@ -68,7 +85,7 @@ export class NetworkFoundationStack extends cdk.Stack {
         {
           name: 'endpoint',
           subnetType: ec2.SubnetType.PRIVATE_ISOLATED,
-          cidrMask: 24,
+          cidrMask: 22,
         },
       ],
     });
@@ -99,6 +116,14 @@ export class NetworkFoundationStack extends cdk.Stack {
       );
     }
 
+    NagSuppressions.addResourceSuppressions(endpointRgSg, [
+      {
+        id: 'CdkNagValidationFailure',
+        reason:
+          'AwsSolutions-EC23 cannot evaluate the ingress source because it is the VPC CidrBlock intrinsic (Fn::GetAtt), not a literal. Ingress is scoped to the VPC CIDR and the VPC Lattice managed prefix list, never 0.0.0.0/0 or ::/0.',
+      },
+    ]);
+
     // Interface endpoints are created in VpcLatticeEndpointsStack so that each
     // endpoint's own regional DNS name (from DnsEntries) can be wired directly
     // into the matching Resource Configuration, mirroring the proven pattern.
@@ -107,17 +132,17 @@ export class NetworkFoundationStack extends cdk.Stack {
     // Egress VPC: public + private(NAT-egress) subnets across 3 AZs
     // ----------------------------------------------------------------
     const egressVpc = new ec2.Vpc(this, 'EgressVpc', {
-      vpcName: 'apg-lattice-egress-vpc',
+      vpcName: `${resourcePrefix}-egress-vpc`,
       ipAddresses: ec2.IpAddresses.cidr(egressVpcCidr),
       maxAzs: 3,
-      natGateways: 1, // single NAT GW for the reference lab; raise to 3 for prod HA
+      natGateways: props.egressNatGateways ?? this.azNames.length, // one NAT per AZ (HA) by default; override to 1 for a env
       restrictDefaultSecurityGroup: true,
       flowLogs: {
         cw: { destination: ec2.FlowLogDestination.toCloudWatchLogs() },
       },
       subnetConfiguration: [
-        { name: 'public', subnetType: ec2.SubnetType.PUBLIC, cidrMask: 24 },
-        { name: 'private', subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS, cidrMask: 24 },
+        { name: 'public', subnetType: ec2.SubnetType.PUBLIC, cidrMask: 22 },
+        { name: 'private', subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS, cidrMask: 22 },
       ],
     });
 
@@ -144,6 +169,14 @@ export class NetworkFoundationStack extends cdk.Stack {
       'Internal NLB to Squid task within the Egress VPC',
     );
 
+    NagSuppressions.addResourceSuppressions(egressRgSg, [
+      {
+        id: 'CdkNagValidationFailure',
+        reason:
+          'AwsSolutions-EC23 cannot evaluate the ingress source because it is the VPC CidrBlock intrinsic (Fn::GetAtt), not a literal. Ingress is scoped to the VPC CIDR and the VPC Lattice managed prefix list, never 0.0.0.0/0 or ::/0.',
+      },
+    ]);
+
     // ----------------------------------------------------------------
     // Publish identifiers to SSM (the contract consumed by Lattice stacks)
     // ----------------------------------------------------------------
@@ -158,28 +191,67 @@ export class NetworkFoundationStack extends cdk.Stack {
       });
 
     // Endpoint VPC
-    writeParam(`${prefix}/network/endpoint-vpc/id`, endpointVpc.vpcId, 'APG Lattice Endpoint VPC ID');
-    writeParam(`${prefix}/network/endpoint-vpc/cidr`, endpointVpc.vpcCidrBlock, 'APG Lattice Endpoint VPC CIDR');
+    writeParam(`${prefix}/network/endpoint-vpc/id`, endpointVpc.vpcId, 'Network fabric Endpoint VPC ID');
+    writeParam(`${prefix}/network/endpoint-vpc/cidr`, endpointVpc.vpcCidrBlock, 'Network fabric Endpoint VPC CIDR');
     endpointSubnetIds.forEach((id, i) =>
       writeParam(
         `${prefix}/network/endpoint-vpc/subnet/${['a', 'b', 'c'][i]}/id`,
         id,
-        `APG Lattice Endpoint VPC Resource Gateway subnet ${['a', 'b', 'c'][i]}`,
+        `Network fabric Endpoint VPC Resource Gateway subnet ${['a', 'b', 'c'][i]}`,
       ),
     );
-    writeParam(`${prefix}/network/endpoint-vpc/sg/rg/id`, endpointRgSg.securityGroupId, 'APG Lattice Endpoint Resource Gateway SG');
+    writeParam(`${prefix}/network/endpoint-vpc/sg/rg/id`, endpointRgSg.securityGroupId, 'Network fabric Endpoint Resource Gateway SG');
 
     // Egress VPC
-    writeParam(`${prefix}/network/egress-vpc/id`, egressVpc.vpcId, 'APG Lattice Egress VPC ID');
-    writeParam(`${prefix}/network/egress-vpc/cidr/ipv4`, egressVpc.vpcCidrBlock, 'APG Lattice Egress VPC CIDR (IPv4)');
+    writeParam(`${prefix}/network/egress-vpc/id`, egressVpc.vpcId, 'Network fabric Egress VPC ID');
+    writeParam(`${prefix}/network/egress-vpc/cidr/ipv4`, egressVpc.vpcCidrBlock, 'Network fabric Egress VPC CIDR (IPv4)');
     egressPrivateSubnetIds.forEach((id, i) =>
       writeParam(
         `${prefix}/network/egress-vpc/subnet/${['a', 'b', 'c'][i]}/id`,
         id,
-        `APG Lattice Egress VPC private subnet ${['a', 'b', 'c'][i]}`,
+        `Network fabric Egress VPC private subnet ${['a', 'b', 'c'][i]}`,
       ),
     );
-    writeParam(`${prefix}/network/egress-vpc/sg/rg/id`, egressRgSg.securityGroupId, 'APG Lattice Egress Resource Gateway SG');
+    writeParam(`${prefix}/network/egress-vpc/sg/rg/id`, egressRgSg.securityGroupId, 'Network fabric Egress Resource Gateway SG');
+
+    // ----------------------------------------------------------------
+    // Ingress VPC: isolated subnets (no NAT) across 3 AZs. Home for the
+    // Service Network VPC Endpoint (SN-E) that fronts external, on-premises,
+    // and cross-Region consumers (Phase 5). Attach your Direct Connect, VPN,
+    // Transit Gateway, or Cloud WAN reach to this VPC; that attachment is
+    // consumer-specific and out of scope for this guide.
+    // ----------------------------------------------------------------
+    const ingressVpc = new ec2.Vpc(this, 'IngressVpc', {
+      vpcName: `${resourcePrefix}-ingress-vpc`,
+      ipAddresses: ec2.IpAddresses.cidr(ingressVpcCidr),
+      maxAzs: 3,
+      natGateways: 0,
+      restrictDefaultSecurityGroup: true,
+      flowLogs: {
+        cw: { destination: ec2.FlowLogDestination.toCloudWatchLogs() },
+      },
+      subnetConfiguration: [
+        // SN-E ENIs allocate contiguous /28 blocks per subnet, and the number of
+        // blocks scales with the resource configurations/services associated to
+        // the service network. With multiple SN-Es (one per environment) sharing
+        // the Ingress VPC, each service network here has ~12 associations, so
+        // /24 (and even /23) subnets can run out of CONTIGUOUS /28 space and the
+        // SN-E fails to stabilize. /22 subnets give every SN-E ample contiguous
+        // headroom so all environments provision cleanly in one VPC.
+        { name: 'ingress', subnetType: ec2.SubnetType.PRIVATE_ISOLATED, cidrMask: 22 },
+      ],
+    });
+    const ingressSubnetIds = ingressVpc.selectSubnets({ subnetGroupName: 'ingress' }).subnetIds;
+
+    writeParam(`${prefix}/network/ingress-vpc/id`, ingressVpc.vpcId, 'Network fabric Ingress VPC ID');
+    writeParam(`${prefix}/network/ingress-vpc/cidr`, ingressVpc.vpcCidrBlock, 'Network fabric Ingress VPC CIDR');
+    ingressSubnetIds.forEach((id, i) =>
+      writeParam(
+        `${prefix}/network/ingress-vpc/subnet/${['a', 'b', 'c'][i]}/id`,
+        id,
+        `Network fabric Ingress VPC SN-E subnet ${['a', 'b', 'c'][i]}`,
+      ),
+    );
 
     // ----------------------------------------------------------------
     // Outputs
@@ -188,5 +260,7 @@ export class NetworkFoundationStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'EgressVpcId', { value: egressVpc.vpcId });
     new cdk.CfnOutput(this, 'EndpointSubnetIds', { value: endpointSubnetIds.join(',') });
     new cdk.CfnOutput(this, 'EgressPrivateSubnetIds', { value: egressPrivateSubnetIds.join(',') });
+    new cdk.CfnOutput(this, 'IngressVpcId', { value: ingressVpc.vpcId });
+    new cdk.CfnOutput(this, 'IngressSubnetIds', { value: ingressSubnetIds.join(',') });
   }
 }

@@ -12,7 +12,7 @@ This phase depends on Phase 1 for one concrete reason, and it is the same reason
 
 In the CDK path the dependency is explicit and enforced by the framework:
 
-- `VpcLatticeCoreStack` (Phase 1) exports `serviceNetworkIds` for dev, stage, and prod.
+- `VpcLatticeCoreStack` (Phase 1) exports `serviceNetworkIds` for dev, test, and prod.
 - `SquidEgressStack` (this phase) consumes those IDs through its `serviceNetworkIds` prop and declares `egressStack.addDependency(coreStack)` in `cdk/bin/app.ts`, so CloudFormation will not deploy the egress stack until the core stack is complete.
 
 Note what this phase does **not** depend on: **Phase 2.** Shared Endpoints and Centralized Egress are independent siblings, both attach to the Service Networks from Phase 1, but neither references the other. You can deploy them in either order, or in parallel, as long as Phase 1 is done first. This guide presents endpoints before egress only because most teams enable private AWS service access before they enable filtered internet access; the IaC imposes no ordering between the two.
@@ -35,12 +35,12 @@ Everything in this phase deploys to the Network account, specifically into the E
 
 The global prerequisites in [Prerequisites](02-prerequisites.md) must be satisfied. The items below are the ones this phase depends on directly:
 
-- [ ] **Phase 1 is complete**, and the three Service Network IDs are available as CDK stack outputs (`ServiceNetworkDevId`, `ServiceNetworkStageId`, `ServiceNetworkProdId`) and consumed by this stack via `coreStack.serviceNetworkIds`.
-- [ ] **The Egress VPC, two Resource Gateway subnets, and the egress security group exist**, with their IDs published to the `/apg-lattice/network/...` SSM paths (or your equivalent if you re-pointed the IaC to a different prefix such as LZA's `/accelerator/network/...`). The stack resolves these at deploy time (`egressVpcSsmPath`, `egressSubnetASsmPath`, `egressSubnetBSsmPath`, `egressSgSsmPath`) rather than hardcoding them.
+- [ ] **Phase 1 is complete**, and the three Service Network IDs are available as CDK stack outputs (`ServiceNetworkDevId`, `ServiceNetworkTestId`, `ServiceNetworkProdId`) and consumed by this stack via `coreStack.serviceNetworkIds`.
+- [ ] **The Egress VPC, two Resource Gateway subnets, and the egress security group exist**, with their IDs published to the `/netfabric/network/...` SSM paths (or your equivalent if you re-pointed the IaC to a different prefix such as LZA's `/accelerator/network/...`). The stack resolves these at deploy time (`egressVpcSsmPath`, `egressSubnetASsmPath`, `egressSubnetBSsmPath`, `egressSgSsmPath`) rather than hardcoding them.
 - [ ] **The Egress VPC has a NAT Gateway** (and a route to it from the private subnets where the Fargate tasks run). The proxy reaches the internet through this NAT Gateway; the stack does not create it.
 - [ ] **Resource Gateway subnets are a minimum of /24.** The egress Resource Gateway provisions elastic network interfaces (ENIs) in these subnets and scales them with connection volume; undersized subnets risk IP exhaustion. (See [subnet sizing](02-prerequisites.md#3-subnet-sizing-requirements); this is requirement 9.3.)
 - [ ] **The egress security group permits the Squid path**, ingress to the Fargate tasks on TCP 3128 from the NLB / Resource Gateway, and egress to the internet (443/80 as your allowlist requires) toward the NAT Gateway.
-- [ ] **Deployment IAM capability in the Network account** to create ECS clusters, Fargate task definitions and services, an NLB, a CloudWatch log group, VPC Lattice Resource Gateways and Resource Configurations, and Service Network associations; and to read the `/apg-lattice/network/...` SSM parameters (or your equivalent SSM prefix). (CDK path additionally requires `cdk bootstrap`.)
+- [ ] **Deployment IAM capability in the Network account** to create ECS clusters, Fargate task definitions and services, an NLB, a CloudWatch log group, VPC Lattice Resource Gateways and Resource Configurations, and Service Network associations; and to read the `/netfabric/network/...` SSM parameters (or your equivalent SSM prefix). (CDK path additionally requires `cdk bootstrap`.)
 
 ## Step 1, Stand up the ECS Fargate Squid service
 
@@ -189,7 +189,7 @@ const resourceGateway = new cdk.CfnResource(this, 'EgressResourceGateway', {
 });
 ```
 
-Finally, the **Resource Configuration** `squid-proxy-rc` maps a single resource, the internal NLB, through that gateway. Its `DnsResource.DomainName` is the NLB's DNS name (`nlb.loadBalancerDnsName`), with `PortRanges: ['3128']` and `Protocol: TCP`. It is then associated to **all three Service Networks** so dev, stage, and prod workloads all reach the same proxy:
+Finally, the **Resource Configuration** `squid-proxy-rc` maps a single resource, the internal NLB, through that gateway. Its `DnsResource.DomainName` is the NLB's DNS name (`nlb.loadBalancerDnsName`), with `PortRanges: ['3128']` and `Protocol: TCP`. It is then associated to **all three Service Networks** so dev, test, and prod workloads all reach the same proxy:
 
 ```typescript
 // cdk/lib/squid-egress-stack.ts
@@ -209,7 +209,7 @@ const squidRc = new cdk.CfnResource(this, 'SquidProxyRC', {
   },
 });
 
-// Associate squid-proxy-rc with dev + stage + prod Service Networks
+// Associate squid-proxy-rc with dev + test + prod Service Networks
 for (const [envName, snId] of Object.entries(props.serviceNetworkIds)) {
   new cdk.CfnResource(this, `SquidRCAssoc-${envName}`, {
     type: 'AWS::VpcLattice::ServiceNetworkResourceAssociation',
@@ -228,7 +228,7 @@ for (const [envName, snId] of Object.entries(props.serviceNetworkIds)) {
 | `IpAddressType` | `IPV4` |
 | `PortRanges` | `['3128']` |
 | `Protocol` | `TCP` |
-| Associated to | dev + stage + prod Service Networks |
+| Associated to | dev + test + prod Service Networks |
 
 > **Why this is secure by construction.** The NLB is internal (`internetFacing: false`), and the only way into it is the egress Resource Gateway, which is in turn reachable only from VPC Lattice. A workload cannot reach the proxy unless its VPC is associated to a Service Network that the RC is associated to, which is gated by the OU-scoped auth policy and RAM share from Phase 1. The proxy has no public surface at all. This is the egress counterpart to the same Lattice exposure model used for the endpoints.
 
@@ -308,6 +308,20 @@ sequenceDiagram
     I-->>W: Response (same path in reverse)
 ```
 
+## What centralized egress does not cover (and how to govern it)
+
+Centralized egress is a **network-layer** control: it can only filter traffic that actually leaves through your VPCs. Compute that runs on AWS-managed network egresses on a path your route tables, security groups, and the Squid proxy never see. The canonical example is an **AWS Lambda function with no VPC configuration**: it runs inside a Lambda-service-managed VPC that is not visible to you, so it reaches the internet independently of this egress chokepoint. (A VPC Lattice *Service* can target such a function, which makes it easy to reuse a VPC-less "utility" function as an egress shortcut; note this is the Lattice Services model, distinct from the VPC Resources model used elsewhere in this guide. The governance answer is the same regardless of how the function is fronted.)
+
+You cannot put network restrictions on a function that is not in your VPC, no security group or route applies to it. The control is therefore at the governance layer: **require that functions be attached to an approved VPC**, which brings them back under this egress design. Because the workload VPC here is isolated (no NAT, no internet gateway; the only egress is Lattice to Squid), a VPC-attached function in it has no internet path except the filtered proxy. Attachment is what makes the control real.
+
+Recommended as defense in depth:
+
+- **Preventive (SCP).** Deny `lambda:CreateFunction` and `lambda:UpdateFunctionConfiguration` unless the request specifies approved VPC settings, using the [Lambda VPC IAM condition keys](https://aws.amazon.com/blogs/compute/using-aws-lambda-iam-condition-keys-for-vpc-settings/) `lambda:VpcIds` / `lambda:SubnetIds` / `lambda:SecurityGroupIds`. With Landing Zone Accelerator, define the policy as an SCP in the LZA config and attach it to the workload OUs, so it is enforced consistently as new accounts join (see [LZA SCP deployment](https://docs.aws.amazon.com/solutions/latest/landing-zone-accelerator-on-aws/awsaccelerator-pipeline.html)).
+- **Detective (AWS Config).** Add the managed rule [`lambda-inside-vpc`](https://docs.aws.amazon.com/config/latest/developerguide/lambda-inside-vpc.html) to flag (and optionally remediate) any function that is not VPC-enabled.
+- **Paved road.** Ship a golden Lambda template that already sets VPC config and `HTTP(S)_PROXY` to the Squid endpoint, and provide interface VPC endpoints so most utility functions never need internet egress at all. The bypass is almost always a convenience choice, not a malicious one, so making the compliant path the easy path does most of the work; the cost consolidation and FQDN audit trail of centralized egress reinforce it.
+
+Scope the VPC-attachment requirement deliberately (for example, to workload OUs with a vetted exception process), since attaching every function to a VPC consumes subnet IPs and adds operational surface.
+
 ## IaC reference
 
 This phase corresponds to a single CDK stack. (This addresses requirement 4.3.)
@@ -322,7 +336,7 @@ egressVpcSsmPath: string;        // SSM path to the Egress VPC ID
 egressSubnetASsmPath: string;    // SSM path to Resource Gateway subnet A
 egressSubnetBSsmPath: string;    // SSM path to Resource Gateway subnet B
 egressSgSsmPath: string;         // SSM path to the egress security group
-serviceNetworkIds: { dev: string; stage: string; prod: string }; // from VpcLatticeCoreStack
+serviceNetworkIds: { dev: string; test: string; prod: string }; // from VpcLatticeCoreStack
 allowedDomains: string;          // FQDN allowlist -> ALLOWED_DOMAINS env var
 desiredCount: number;            // Fargate task count
 cpu: number;                     // task CPU units
@@ -378,7 +392,7 @@ aws cloudformation deploy \
   --parameter-overrides \
     LatticePrefixListId=pl-EXAMPLE \
     DevServiceNetworkId=sn-EXAMPLEdev0000000 \
-    StageServiceNetworkId=sn-EXAMPLEstage00000 \
+    TestServiceNetworkId=sn-EXAMPLEtest000000 \
     ProdServiceNetworkId=sn-EXAMPLEprod000000 \
     AllowedDomains="aws.amazon.com .ubuntu.com .pypi.org"
 ```
@@ -392,7 +406,7 @@ After this phase completes, the Network account's Egress VPC contains: (this add
 - **An ECS cluster** `squid-egress-cluster` (Container Insights on) running a **Fargate service** with `desiredCount` healthy tasks (default 2) on the `squid-egress-proxy` task family, in private subnets with no public IP.
 - **An internal NLB** (`internetFacing: false`, cross-zone enabled) with a TCP `:3128` listener and a target group whose targets are **healthy** under the 3128 TCP health check.
 - **An egress Resource Gateway** (`egress-resource-gateway`), active, with ENIs in the two egress subnets.
-- **The `squid-proxy-rc` Resource Configuration**, targeting the internal NLB DNS name on `3128/TCP`, **associated to all three Service Networks** (dev, stage, prod).
+- **The `squid-proxy-rc` Resource Configuration**, targeting the internal NLB DNS name on `3128/TCP`, **associated to all three Service Networks** (dev, test, prod).
 - **CloudWatch logs** flowing to `/ecs/squid-egress-proxy`, and **ECS Exec available** for live troubleshooting.
 
 At this point the proxy exists and is exposed, but no workload reaches it yet, that happens after the VPC association in [Phase 4](07-phase4-workload-onboarding.md).
@@ -428,7 +442,7 @@ Also check, in the console:
 
 - **Amazon ECS → Clusters → `squid-egress-cluster`**: the service at its desired task count, tasks in **Running** state, and Container Insights metrics populating.
 - **EC2 → Load balancers → target group**: targets **healthy** on port 3128.
-- **VPC Lattice → Resource gateways / Resource configurations**: `egress-resource-gateway` **Active** and `squid-proxy-rc` on `3128/TCP`, associated to the dev, stage, and prod Service Networks.
+- **VPC Lattice → Resource gateways / Resource configurations**: `egress-resource-gateway` **Active** and `squid-proxy-rc` on `3128/TCP`, associated to the dev, test, and prod Service Networks.
 - **CloudWatch → Log groups → `/ecs/squid-egress-proxy`**: recent Squid log streams.
 
 For **live troubleshooting**, ECS Exec lets you open a shell into a running task to inspect the Squid process or its effective allowlist (ECS Exec is a security-relevant capability, it grants interactive access to running tasks, scoped here to the task role):

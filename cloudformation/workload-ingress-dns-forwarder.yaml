@@ -1,0 +1,96 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Phase 5 ingress DNS forwarder (Workload account). A workload account exposes
+  its application as a VPC Lattice Resource Configuration in its OWN account, so
+  the ingress "publish" tag change fires on this account's default EventBridge
+  bus, not in the Network account where the DNS automation runs. This template
+  forwards those Resource Configuration tag-change events to the Network
+  account's cross-account ingress DNS bus, where the Step Functions automation
+  creates or deletes the custom-domain CNAME. No Lambda: a single EventBridge
+  rule with a cross-account event-bus target. Deploy once per workload account.
+  Kept at parity with cdk/lib/workload-ingress-dns-forwarder-stack.ts.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Naming
+        Parameters:
+          - ResourcePrefix
+      - Label:
+          default: Network account target
+        Parameters:
+          - NetworkAccountId
+          - IngressDnsBusName
+          - PublishTagKey
+
+Parameters:
+  ResourcePrefix:
+    Type: String
+    Default: netfabric
+    AllowedPattern: '^[a-z][a-z0-9-]{1,30}[a-z0-9]$'
+    Description: Single token that namespaces every resource name created by this stack.
+
+  NetworkAccountId:
+    Type: String
+    AllowedPattern: '^\d{12}$'
+    Description: Network account ID that hosts the ingress DNS automation and its cross-account event bus.
+
+  IngressDnsBusName:
+    Type: String
+    Default: netfabric-ingress-dns-bus
+    Description: Name of the cross-account ingress DNS event bus in the Network account (published at <SsmPrefix>/ingress/dns-bus/name by the DNS automation).
+
+  PublishTagKey:
+    Type: String
+    Default: PublishIngressDns
+    AllowedPattern: '^[A-Za-z0-9_.:/=+@-]{1,128}$'
+    Description: Tag key that opts a Resource Configuration in to ingress DNS publishing.
+
+Resources:
+  ForwarderRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ResourcePrefix}-ingress-dns-forwarder-role-${AWS::Region}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ForwardToNetworkBus
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: events:PutEvents
+                Resource: !Sub 'arn:${AWS::Partition}:events:${AWS::Region}:${NetworkAccountId}:event-bus/${IngressDnsBusName}'
+
+  ForwardRcTagChanges:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ResourcePrefix}-ingress-dns-forward'
+      State: ENABLED
+      EventPattern:
+        source:
+          - aws.tag
+        detail-type:
+          - Tag Change on Resource
+        detail:
+          service:
+            - vpc-lattice
+          resource-type:
+            - resourceconfiguration
+          changed-tag-keys:
+            - !Ref PublishTagKey
+      Targets:
+        - Id: NetworkIngressDnsBus
+          Arn: !Sub 'arn:${AWS::Partition}:events:${AWS::Region}:${NetworkAccountId}:event-bus/${IngressDnsBusName}'
+          RoleArn: !GetAtt ForwarderRole.Arn
+
+Outputs:
+  TargetBusArn:
+    Description: Network-account ingress DNS bus this account forwards to.
+    Value: !Sub 'arn:${AWS::Partition}:events:${AWS::Region}:${NetworkAccountId}:event-bus/${IngressDnsBusName}'

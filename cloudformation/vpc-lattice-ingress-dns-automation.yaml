@@ -1,0 +1,493 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Phase 5 ingress DNS automation for VPC Lattice (Network account). When a
+  shared Resource Configuration is tagged with the publish tag (whose value is
+  the consumer-facing ingress domain, e.g. proxy.ingress.internal), this
+  automation finds the resource's generated DNS name on the Service Network VPC
+  Endpoint (SN-E) and UPSERTs a CNAME at that domain in the ingress private
+  hosted zone, so external, on-premises, and cross-Region consumers can reach it
+  by a friendly name. On tag removal the record is deleted. The flow is
+  event-driven and Lambda-free: EventBridge to Step Functions (native AWS SDK
+  integrations) to Route 53, with a DynamoDB table tracking records for cleanup.
+  Adapted from the AWS solution "Guidance for Amazon VPC Lattice Automated DNS
+  Configuration on AWS" and re-targeted from Lattice Services to the VPC
+  Resources model used by this guide.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Naming
+        Parameters:
+          - ResourcePrefix
+          - SsmPrefix
+      - Label:
+          default: DNS
+        Parameters:
+          - PrivateHostedZoneId
+          - PublishTagKey
+      - Label:
+          default: Service Network VPC Endpoints (from SSM)
+        Parameters:
+          - SneDevId
+      - Label:
+          default: Cross-account ingress (optional)
+        Parameters:
+          - OrgId
+
+Parameters:
+  ResourcePrefix:
+    Type: String
+    Default: netfabric
+    AllowedPattern: '^[a-z][a-z0-9-]{1,30}[a-z0-9]$'
+    Description: Single token that namespaces every resource name created by this stack.
+
+  PrivateHostedZoneId:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /netfabric/ingress/hosted-zone-id
+    Description: SSM path resolving to the ingress Route 53 private hosted zone ID (published by vpc-lattice-ingress-zone.yaml).
+
+  PublishTagKey:
+    Type: String
+    Default: PublishIngressDns
+    AllowedPattern: '^[A-Za-z0-9_.:/=+@-]{1,128}$'
+    Description: Tag key on a Resource Configuration that opts it in to ingress DNS publishing. Set the tag VALUE to the consumer-facing custom domain to publish (e.g. proxy.ingress.internal); remove the tag to delete the record.
+
+  SsmPrefix:
+    Type: String
+    Default: /netfabric
+    AllowedPattern: '^/[a-zA-Z0-9/_.-]+[^/]$'
+    Description: SSM namespace. When OrgId is set, the cross-account bus name is published at <SsmPrefix>/ingress/dns-bus/name.
+
+  SneDevId:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /netfabric/ingress/dev/sne/id
+    Description: SN-E VPC Endpoint ID to query (the dev SN-E, published by the ingress SN-E stack). Extend the state machine if you front multiple environments.
+
+  OrgId:
+    Type: String
+    Default: ''
+    Description: AWS Organizations ID (o-xxxxxxxxxx). When set, a cross-account ingress DNS event bus is created and scoped to the org so workload accounts can forward their Resource Configuration tag-change events to this automation. Leave blank for single-account only.
+
+Conditions:
+  HasOrgId: !Not [!Equals [!Ref OrgId, '']]
+
+Resources:
+  # ------------------------------------------------------------
+  # Dead letter queue for failed rule deliveries
+  # ------------------------------------------------------------
+  DlqQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${ResourcePrefix}-ingress-dns-dlq'
+      SqsManagedSseEnabled: true
+      MessageRetentionPeriod: 1209600
+
+  # Enforce TLS in transit on the DLQ.
+  DlqQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref DlqQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 'sqs:*'
+            Resource: !GetAtt DlqQueue.Arn
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+
+  # ------------------------------------------------------------
+  # DynamoDB table tracking published records for clean deletion
+  # ------------------------------------------------------------
+  DnsRecordTracker:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${ResourcePrefix}-ingress-dns-records'
+      BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      AttributeDefinitions:
+        - AttributeName: ResourceArn
+          AttributeType: S
+      KeySchema:
+        - AttributeName: ResourceArn
+          KeyType: HASH
+
+  # ------------------------------------------------------------
+  # CloudWatch Logs for the state machine
+  # ------------------------------------------------------------
+  StateMachineLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/${ResourcePrefix}/ingress-dns-automation/state-machine'
+      RetentionInDays: 30
+
+  # ------------------------------------------------------------
+  # IAM role for the state machine (least privilege)
+  # ------------------------------------------------------------
+  StepFunctionsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ResourcePrefix}-ingress-dns-sfn-role-${AWS::Region}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: IngressDnsAutomation
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ec2:DescribeVpcEndpointAssociations
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:DeleteItem
+                Resource: !GetAtt DnsRecordTracker.Arn
+              - Effect: Allow
+                Action:
+                  - route53:ListResourceRecordSets
+                  - route53:ChangeResourceRecordSets
+                Resource: !Sub 'arn:${AWS::Partition}:route53:::hostedzone/${PrivateHostedZoneId}'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogDelivery
+                  - logs:GetLogDelivery
+                  - logs:UpdateLogDelivery
+                  - logs:DeleteLogDelivery
+                  - logs:ListLogDeliveries
+                  - logs:PutResourcePolicy
+                  - logs:DescribeResourcePolicies
+                  - logs:DescribeLogGroups
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+
+  # ------------------------------------------------------------
+  # Step Functions state machine (Lambda-free, JSONata + SDK integrations)
+  # ------------------------------------------------------------
+  DnsConfigStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub '${ResourcePrefix}-ingress-dns'
+      RoleArn: !GetAtt StepFunctionsRole.Arn
+      StateMachineType: STANDARD
+      LoggingConfiguration:
+        IncludeExecutionData: true
+        Level: ALL
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt StateMachineLogGroup.Arn
+      DefinitionSubstitutions:
+        phz: !Ref PrivateHostedZoneId
+        dynamodbtable: !Ref DnsRecordTracker
+        sneIds: !Ref SneDevId
+        tagKey: !Ref PublishTagKey
+      DefinitionString: |
+        {
+          "Comment": "Ingress DNS for VPC Lattice Resource Configurations: UPSERT a CNAME from the consumer-facing ingress domain (publish tag value) to the resource's SN-E generated DNS name.",
+          "QueryLanguage": "JSONata",
+          "StartAt": "ActionType",
+          "States": {
+            "ActionType": {
+              "Type": "Choice",
+              "Default": "Pass",
+              "Choices": [
+                {
+                  "Next": "FindSneDns",
+                  "Condition": "{% $exists($states.input.detail.tags.${tagKey}) %}",
+                  "Assign": {
+                    "ResourceArn": "{% $states.input.resources[0] %}",
+                    "IngressDomain": "{% $states.input.detail.tags.${tagKey} %}"
+                  }
+                },
+                {
+                  "Next": "GetTrackedRecord",
+                  "Condition": "{% '${tagKey}' in $states.input.detail.'changed-tag-keys' and $not($exists($states.input.detail.tags.${tagKey})) %}",
+                  "Assign": { "ResourceArn": "{% $states.input.resources[0] %}" }
+                }
+              ]
+            },
+            "FindSneDns": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::aws-sdk:ec2:describeVpcEndpointAssociations",
+              "Next": "ExtractSneDns",
+              "Arguments": { "VpcEndpointIds": "{% $split('${sneIds}', ',') %}" },
+              "Output": { "Associations": "{% $states.result.VpcEndpointAssociations %}" }
+            },
+            "ExtractSneDns": {
+              "Type": "Pass",
+              "Next": "CreateDnsRecords",
+              "Output": {
+                "SneDnsName": "{% $states.input.Associations[AssociatedResourceArn = $ResourceArn][0].DnsEntry.DnsName %}"
+              }
+            },
+            "CreateDnsRecords": {
+              "Type": "Parallel",
+              "End": true,
+              "Branches": [
+                {
+                  "StartAt": "UpsertCnameRecord",
+                  "States": {
+                    "UpsertCnameRecord": {
+                      "Type": "Task",
+                      "Resource": "arn:aws:states:::aws-sdk:route53:changeResourceRecordSets",
+                      "End": true,
+                      "Arguments": {
+                        "HostedZoneId": "${phz}",
+                        "ChangeBatch": {
+                          "Changes": [
+                            {
+                              "Action": "UPSERT",
+                              "ResourceRecordSet": {
+                                "Name": "{% $IngressDomain %}",
+                                "Type": "CNAME",
+                                "Ttl": 60,
+                                "ResourceRecords": [ { "Value": "{% $states.input.SneDnsName %}" } ]
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "StartAt": "TrackInDynamoDB",
+                  "States": {
+                    "TrackInDynamoDB": {
+                      "Type": "Task",
+                      "Resource": "arn:aws:states:::dynamodb:putItem",
+                      "End": true,
+                      "Arguments": {
+                        "TableName": "${dynamodbtable}",
+                        "Item": {
+                          "ResourceArn": { "S": "{% $ResourceArn %}" },
+                          "CustomDomainName": { "S": "{% $IngressDomain %}" },
+                          "VpcLatticeDomainName": { "S": "{% $states.input.SneDnsName %}" },
+                          "HostedZoneId": { "S": "${phz}" }
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            },
+            "GetTrackedRecord": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::dynamodb:getItem",
+              "Next": "CheckTrackedRecord",
+              "Arguments": {
+                "TableName": "${dynamodbtable}",
+                "Key": { "ResourceArn": { "S": "{% $ResourceArn %}" } }
+              }
+            },
+            "CheckTrackedRecord": {
+              "Type": "Choice",
+              "Default": "Pass",
+              "Choices": [
+                {
+                  "Next": "DeleteDnsRecord",
+                  "Condition": "{% $exists($states.input.Item) %}",
+                  "Output": {
+                    "CustomDomainName": "{% $states.input.Item.CustomDomainName.S %}",
+                    "VpcLatticeDomainName": "{% $states.input.Item.VpcLatticeDomainName.S %}",
+                    "HostedZoneId": "{% $states.input.Item.HostedZoneId.S %}"
+                  }
+                }
+              ]
+            },
+            "DeleteDnsRecord": {
+              "Type": "Parallel",
+              "End": true,
+              "Branches": [
+                {
+                  "StartAt": "DeleteCnameRecord",
+                  "States": {
+                    "DeleteCnameRecord": {
+                      "Type": "Task",
+                      "Resource": "arn:aws:states:::aws-sdk:route53:changeResourceRecordSets",
+                      "End": true,
+                      "Arguments": {
+                        "HostedZoneId": "{% $states.input.HostedZoneId %}",
+                        "ChangeBatch": {
+                          "Changes": [
+                            {
+                              "Action": "DELETE",
+                              "ResourceRecordSet": {
+                                "Name": "{% $states.input.CustomDomainName %}",
+                                "Type": "CNAME",
+                                "Ttl": 60,
+                                "ResourceRecords": [ { "Value": "{% $states.input.VpcLatticeDomainName %}" } ]
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "StartAt": "DeleteDynamoItem",
+                  "States": {
+                    "DeleteDynamoItem": {
+                      "Type": "Task",
+                      "Resource": "arn:aws:states:::dynamodb:deleteItem",
+                      "End": true,
+                      "Arguments": {
+                        "TableName": "${dynamodbtable}",
+                        "Key": { "ResourceArn": { "S": "{% $ResourceArn %}" } }
+                      }
+                    }
+                  }
+                }
+              ]
+            },
+            "Pass": { "Type": "Pass", "End": true }
+          }
+        }
+
+  # ------------------------------------------------------------
+  # EventBridge rule (default bus): trigger on RC publish-tag changes
+  # ------------------------------------------------------------
+  EventBridgeTargetRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ResourcePrefix}-ingress-dns-events-role-${AWS::Region}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: StartStateMachine
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: states:StartExecution
+                Resource: !Ref DnsConfigStateMachine
+
+  DnsAutomationRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ResourcePrefix}-ingress-dns-trigger'
+      State: ENABLED
+      EventPattern:
+        source:
+          - aws.tag
+        detail-type:
+          - Tag Change on Resource
+        detail:
+          service:
+            - vpc-lattice
+          resource-type:
+            - resourceconfiguration
+          changed-tag-keys:
+            - !Ref PublishTagKey
+      Targets:
+        - Id: StepFunctionsTarget
+          Arn: !Ref DnsConfigStateMachine
+          RoleArn: !GetAtt EventBridgeTargetRole.Arn
+          RetryPolicy:
+            MaximumEventAgeInSeconds: 60
+            MaximumRetryAttempts: 5
+          DeadLetterConfig:
+            Arn: !GetAtt DlqQueue.Arn
+
+  # ------------------------------------------------------------
+  # Cross-account ingress (optional, when OrgId is set): a custom event bus
+  # receives RC tag-change events forwarded from workload accounts, and a
+  # second rule on it drives the same state machine. Workload accounts forward
+  # via workload-ingress-dns-forwarder.yaml.
+  # ------------------------------------------------------------
+  IngressDnsBus:
+    Type: AWS::Events::EventBus
+    Condition: HasOrgId
+    Properties:
+      Name: !Sub '${ResourcePrefix}-ingress-dns-bus'
+
+  IngressDnsBusPolicy:
+    Type: AWS::Events::EventBusPolicy
+    Condition: HasOrgId
+    Properties:
+      EventBusName: !Ref IngressDnsBus
+      StatementId: !Sub '${ResourcePrefix}-ingress-dns-org'
+      Action: events:PutEvents
+      Principal: '*'
+      Condition:
+        Type: StringEquals
+        Key: aws:PrincipalOrgID
+        Value: !Ref OrgId
+
+  DnsAutomationRuleCrossAccount:
+    Type: AWS::Events::Rule
+    Condition: HasOrgId
+    Properties:
+      Name: !Sub '${ResourcePrefix}-ingress-dns-trigger-xacct'
+      EventBusName: !Ref IngressDnsBus
+      State: ENABLED
+      EventPattern:
+        source:
+          - aws.tag
+        detail-type:
+          - Tag Change on Resource
+        detail:
+          service:
+            - vpc-lattice
+          resource-type:
+            - resourceconfiguration
+          changed-tag-keys:
+            - !Ref PublishTagKey
+      Targets:
+        - Id: StepFunctionsTarget
+          Arn: !Ref DnsConfigStateMachine
+          RoleArn: !GetAtt EventBridgeTargetRole.Arn
+          RetryPolicy:
+            MaximumEventAgeInSeconds: 60
+            MaximumRetryAttempts: 5
+          DeadLetterConfig:
+            Arn: !GetAtt DlqQueue.Arn
+
+  IngressDnsBusNameParam:
+    Type: AWS::SSM::Parameter
+    Condition: HasOrgId
+    Properties:
+      Name: !Sub '${SsmPrefix}/ingress/dns-bus/name'
+      Type: String
+      Value: !Ref IngressDnsBus
+      Description: Cross-account ingress DNS event bus name (workload forwarders target this bus in the Network account).
+
+Outputs:
+  StateMachineArn:
+    Description: Ingress DNS automation state machine ARN.
+    Value: !Ref DnsConfigStateMachine
+  DnsRecordTableName:
+    Description: DynamoDB table tracking published ingress DNS records.
+    Value: !Ref DnsRecordTracker
+  DeadLetterQueueUrl:
+    Description: DLQ for failed rule deliveries.
+    Value: !Ref DlqQueue
+  IngressDnsBusName:
+    Condition: HasOrgId
+    Description: Cross-account ingress DNS event bus name (workload forwarders target this).
+    Value: !Ref IngressDnsBus
+  IngressDnsBusArn:
+    Condition: HasOrgId
+    Description: Cross-account ingress DNS event bus ARN.
+    Value: !GetAtt IngressDnsBus.Arn

@@ -10,6 +10,8 @@ import { Construct } from 'constructs';
 import * as path from 'path';
 
 export interface SquidImageBuildStackProps extends cdk.StackProps {
+  /** Single token that namespaces the repo name and SSM path. */
+  resourcePrefix?: string;
   /** ECR repository name for the Squid proxy image. */
   repositoryName?: string;
   /** SSM parameter path to publish the built image URI under. */
@@ -35,8 +37,9 @@ export class SquidImageBuildStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: SquidImageBuildStackProps = {}) {
     super(scope, id, props);
 
-    const repositoryName = props.repositoryName ?? 'apg-lattice-squid-proxy';
-    const imageUriSsmPath = props.imageUriSsmPath ?? '/apg-lattice/egress/squid-image-uri';
+    const resourcePrefix = props.resourcePrefix ?? 'netfabric';
+    const repositoryName = props.repositoryName ?? `${resourcePrefix}-squid-proxy`;
+    const imageUriSsmPath = props.imageUriSsmPath ?? `/${resourcePrefix}/egress/squid-image-uri`;
 
     const repo = new ecr.Repository(this, 'SquidRepo', {
       repositoryName,
@@ -120,7 +123,7 @@ export class SquidImageBuildStack extends cdk.Stack {
     new ssm.StringParameter(this, 'ImageUriParam', {
       parameterName: imageUriSsmPath,
       stringValue: `${repo.repositoryUri}:bootstrap`,
-      description: 'APG Lattice Squid proxy image URI (updated by CodeBuild)',
+      description: 'Squid proxy image URI (updated by CodeBuild)',
     });
 
     new cdk.CfnOutput(this, 'EcrRepositoryUri', { value: repo.repositoryUri });

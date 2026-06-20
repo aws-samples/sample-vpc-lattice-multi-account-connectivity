@@ -6,21 +6,25 @@ import { Construct } from 'constructs';
 export interface VpcLatticeCoreStackProps extends cdk.StackProps {
   orgId: string;
   devOuArn: string;
-  stageOuArn: string;
+  testOuArn: string;
   prodOuArn: string;
+  /** Single token that namespaces access-log group paths. */
+  resourcePrefix?: string;
 }
 
 /**
- * Creates three VPC Lattice service networks (dev, stage, prod) and
+ * Creates three VPC Lattice service networks (dev, test, prod) and
  * shares them to the corresponding organizational units via AWS RAM.
  *
  * This is the foundational stack. All other stacks depend on it.
  */
 export class VpcLatticeCoreStack extends cdk.Stack {
-  public readonly serviceNetworkIds: { dev: string; stage: string; prod: string };
+  public readonly serviceNetworkIds: { dev: string; test: string; prod: string };
 
   constructor(scope: Construct, id: string, props: VpcLatticeCoreStackProps) {
     super(scope, id, props);
+
+    const resourcePrefix = props.resourcePrefix ?? 'netfabric';
 
     // Service Network: Dev
     const snDev = new cdk.CfnResource(this, 'ServiceNetworkDev', {
@@ -28,17 +32,25 @@ export class VpcLatticeCoreStack extends cdk.Stack {
       properties: {
         Name: 'sn-dev-shared',
         AuthType: 'AWS_IAM',
-        Tags: [{ Key: 'Environment', Value: 'dev' }],
+        Tags: [
+          { Key: 'Name', Value: 'sn-dev-shared' },
+          { Key: 'Environment', Value: 'dev' },
+          { Key: 'Description', Value: 'Shared VPC Lattice service network for the dev environment: AWS service endpoint access and centralized egress for dev OU workload VPCs.' },
+        ],
       },
     });
 
-    // Service Network: Stage
-    const snStage = new cdk.CfnResource(this, 'ServiceNetworkStage', {
+    // Service Network: Test
+    const snTest = new cdk.CfnResource(this, 'ServiceNetworkTest', {
       type: 'AWS::VpcLattice::ServiceNetwork',
       properties: {
-        Name: 'sn-stage-shared',
+        Name: 'sn-test-shared',
         AuthType: 'AWS_IAM',
-        Tags: [{ Key: 'Environment', Value: 'stage' }],
+        Tags: [
+          { Key: 'Name', Value: 'sn-test-shared' },
+          { Key: 'Environment', Value: 'test' },
+          { Key: 'Description', Value: 'Shared VPC Lattice service network for the test environment: AWS service endpoint access and centralized egress for test OU workload VPCs.' },
+        ],
       },
     });
 
@@ -48,29 +60,33 @@ export class VpcLatticeCoreStack extends cdk.Stack {
       properties: {
         Name: 'sn-prod-shared',
         AuthType: 'AWS_IAM',
-        Tags: [{ Key: 'Environment', Value: 'prod' }],
+        Tags: [
+          { Key: 'Name', Value: 'sn-prod-shared' },
+          { Key: 'Environment', Value: 'prod' },
+          { Key: 'Description', Value: 'Shared VPC Lattice service network for the prod environment: AWS service endpoint access and centralized egress for prod OU workload VPCs.' },
+        ],
       },
     });
 
     // RAM Share: Dev service network to Dev OU
     new ram.CfnResourceShare(this, 'RamShareDev', {
-      name: 'vpc-lattice-sn-dev-share',
+      name: `${resourcePrefix}-sn-dev-share`,
       allowExternalPrincipals: false,
       principals: [props.devOuArn],
       resourceArns: [snDev.getAtt('Arn').toString()],
     });
 
-    // RAM Share: Stage service network to Stage OU
-    new ram.CfnResourceShare(this, 'RamShareStage', {
-      name: 'vpc-lattice-sn-stage-share',
+    // RAM Share: Test service network to Test OU
+    new ram.CfnResourceShare(this, 'RamShareTest', {
+      name: `${resourcePrefix}-sn-test-share`,
       allowExternalPrincipals: false,
-      principals: [props.stageOuArn],
-      resourceArns: [snStage.getAtt('Arn').toString()],
+      principals: [props.testOuArn],
+      resourceArns: [snTest.getAtt('Arn').toString()],
     });
 
     // RAM Share: Prod service network to Prod OU
     new ram.CfnResourceShare(this, 'RamShareProd', {
-      name: 'vpc-lattice-sn-prod-share',
+      name: `${resourcePrefix}-sn-prod-share`,
       allowExternalPrincipals: false,
       principals: [props.prodOuArn],
       resourceArns: [snProd.getAtt('Arn').toString()],
@@ -117,11 +133,11 @@ export class VpcLatticeCoreStack extends cdk.Stack {
         Policy: authPolicy(props.devOuArn),
       },
     });
-    new cdk.CfnResource(this, 'AuthPolicyStage', {
+    new cdk.CfnResource(this, 'AuthPolicyTest', {
       type: 'AWS::VpcLattice::AuthPolicy',
       properties: {
-        ResourceIdentifier: snStage.getAtt('Id'),
-        Policy: authPolicy(props.stageOuArn),
+        ResourceIdentifier: snTest.getAtt('Id'),
+        Policy: authPolicy(props.testOuArn),
       },
     });
     new cdk.CfnResource(this, 'AuthPolicyProd', {
@@ -135,7 +151,7 @@ export class VpcLatticeCoreStack extends cdk.Stack {
     // Export service network IDs for dependent stacks
     this.serviceNetworkIds = {
       dev: snDev.getAtt('Id').toString(),
-      stage: snStage.getAtt('Id').toString(),
+      test: snTest.getAtt('Id').toString(),
       prod: snProd.getAtt('Id').toString(),
     };
 
@@ -145,13 +161,13 @@ export class VpcLatticeCoreStack extends cdk.Stack {
     // source for the internal egress NLB.
     const accessLogNetworks: { env: string; sn: cdk.CfnResource }[] = [
       { env: 'dev', sn: snDev },
-      { env: 'stage', sn: snStage },
+      { env: 'test', sn: snTest },
       { env: 'prod', sn: snProd },
     ];
     for (const { env, sn } of accessLogNetworks) {
       for (const logType of ['SERVICE', 'RESOURCE'] as const) {
         const lg = new logs.LogGroup(this, `AccessLog${env}${logType}`, {
-          logGroupName: `/apg-lattice/${env}/${logType.toLowerCase()}-access-logs`,
+          logGroupName: `/${resourcePrefix}/${env}/${logType.toLowerCase()}-access-logs`,
           retention: logs.RetentionDays.ONE_MONTH,
           removalPolicy: cdk.RemovalPolicy.DESTROY,
         });
@@ -168,7 +184,7 @@ export class VpcLatticeCoreStack extends cdk.Stack {
 
     // Outputs
     new cdk.CfnOutput(this, 'ServiceNetworkDevId', { value: this.serviceNetworkIds.dev });
-    new cdk.CfnOutput(this, 'ServiceNetworkStageId', { value: this.serviceNetworkIds.stage });
+    new cdk.CfnOutput(this, 'ServiceNetworkTestId', { value: this.serviceNetworkIds.test });
     new cdk.CfnOutput(this, 'ServiceNetworkProdId', { value: this.serviceNetworkIds.prod });
   }
 }

@@ -4,7 +4,7 @@ The [Troubleshooting and FAQ](12-troubleshooting-faq.md) section closed the oper
 
 The review was deliberately multi-layered, because no single technique catches everything. A structured **STRIDE threat model** finds design-level risks an automated scanner cannot reason about; **`cdk-nag` at synthesis** catches resource-level misconfiguration the moment a stack is built; a manual **IAM least-privilege review** confirms that policies enumerate only the actions and resources they need; a **security group review** confirms no port is open to the world; and a **secrets scan** confirms nothing sensitive was committed alongside the guide. Each layer is summarized below, and each maps to a requirement in the security-review acceptance criteria.
 
-> **A note on conventions.** As elsewhere in this guide, examples use the `us-east-2` Region and placeholder identifiers (organization ID `o-EXAMPLE12345`, account `111111111111`). The reference IaC deploys **three Service Networks**, one each for dev, stage, and prod, named `sn-{env}-shared` in both the AWS Cloud Development Kit (CDK) and AWS CloudFormation paths. No customer-identifying information is implied; substitute your own values. The threat model summarized here uses these same placeholders.
+> **A note on conventions.** As elsewhere in this guide, examples use the `us-east-2` Region and placeholder identifiers (organization ID `o-EXAMPLE12345`, account `111111111111`). The reference IaC deploys **three Service Networks**, one each for dev, test, and prod, named `sn-{env}-shared` in both the AWS Cloud Development Kit (CDK) and AWS CloudFormation paths. No customer-identifying information is implied; substitute your own values. The threat model summarized here uses these same placeholders.
 
 ## Review methodology
 
@@ -14,7 +14,7 @@ The security review comprised five activities, performed in this order:
 2. **Threat Composer export.** The completed model was exported in AWS Threat Composer JSON format (see [The threat model](#the-threat-model)).
 3. **IAM least-privilege review.** Every IAM policy in the IaC was inspected for wildcard actions and overly broad resource scopes (see [IAM least-privilege review](#iam-least-privilege-review)).
 4. **Security group review.** Every security group authored or referenced by the IaC was checked for unrestricted ingress and for explicit, minimal ports (see [Security group review](#security-group-review)).
-5. **Secrets scan.** All IaC files, Lambda source, and documentation were scanned for hardcoded credentials, keys, tokens, and real account or resource identifiers (see [Secrets scan](#secrets-scan)).
+5. **Secrets scan.** All IaC files and documentation were scanned for hardcoded credentials, keys, tokens, and real account or resource identifiers (see [Secrets scan](#secrets-scan)).
 
 Running underneath all of this, the CDK application has the `cdk-nag` `AwsSolutionsChecks` aspect enabled at synthesis (`cdk.Aspects.of(app).add(new AwsSolutionsChecks(...))` in `cdk/bin/app.ts`), so every `cdk synth` and `cdk deploy` re-evaluates the stacks against the AWS Solutions rule pack and fails on any unaddressed finding. The findings it raised were either remediated in the resource definitions or suppressed with a written justification; those suppressions are catalogued in [cdk-nag findings and resolutions](#cdk-nag-findings-and-resolutions).
 
@@ -32,7 +32,7 @@ The table below lists all 15 threats with their STRIDE category, a one-line summ
 
 | ID | STRIDE | Threat (summary) | Severity | Mitigation(s) | Status |
 |----|--------|------------------|----------|---------------|--------|
-| T1 | Elevation of Privilege | Workload insider in one OU invokes another environment's Service Network, crossing dev/stage/prod isolation | High | M1, M2, M7 | Resolved |
+| T1 | Elevation of Privilege | Workload insider in one OU invokes another environment's Service Network, crossing dev/test/prod isolation | High | M1, M2, M7 | Resolved |
 | T2 | Elevation of Privilege | In-org principal outside the authorized OU paths invokes a Service Network relying on org membership alone | High | M1, M2 | Resolved |
 | T3 | Information Disclosure | Compromised workload exfiltrates data to a domain not on the Squid FQDN allowlist (C2/exfil) | High | M3, M10 | Resolved |
 | T4 | Information Disclosure | Insider or compromised workload bypasses the Squid proxy to reach the internet without FQDN filtering | High | M4, M13 | In Progress |
@@ -40,13 +40,13 @@ The table below lists all 15 threats with their STRIDE category, a one-line summ
 | T6 | Tampering | Compromised Network-account operator weakens an auth policy or broadens a RAM share (high blast radius) | Critical | M6, M10 | In Progress |
 | T7 | Tampering | Negligent operator sets an overly broad `PrincipalOrgPaths` wildcard, granting more accounts than intended | Medium-High | M1, M6 | Resolved / In Progress |
 | T8 | Tampering | Actor enables `AllowExternalPrincipals` or adds out-of-org principals to a Service Network RAM share | High | M6, M7 | In Progress / Resolved |
-| T9 | Spoofing | Rogue Interface VPC endpoint planted in the Endpoint VPC causes the lookup Lambda to map a service domain to an attacker endpoint | High | M9 | In Progress |
+| T9 | Spoofing | Rogue Interface VPC endpoint planted in the Endpoint VPC is mapped to a service domain | High | M9 | In Progress |
 | T10 | Tampering | Supply-chain attacker publishes a malicious/vulnerable Squid image pulled via the unpinned `ubuntu/squid:latest` tag | High | M8 | Identified (open) |
 | T11 | Information Disclosure | Network attacker on the egress data path intercepts proxied traffic in transit | Medium | M4, M13 | In Progress |
 | T12 | Repudiation | Insider performs unauthorized invocations and denies them due to insufficient access logging | Medium | M10 | Resolved |
 | T13 | Denial of Service | High-volume actor floods the shared Resource Gateway, NLB, or Squid Fargate service, affecting all tenants | Medium-High | M12 | In Progress |
-| T14 | Information Disclosure | Compromised VPCE DNS Lookup Lambda role (`ec2:DescribeVpcEndpoints` on `*`) enumerates endpoint inventory for recon | Low-Medium | M11 | Resolved |
-| T15 | Information Disclosure | Compromised Workload Lookup Lambda role reads LZA SSM parameters to enumerate VPC/subnet/SG identifiers | Low-Medium | M11 | Resolved |
+| T14 | Information Disclosure | (Eliminated by design) There is no VPCE DNS lookup function and no `ec2:DescribeVpcEndpoints` role on either path; endpoint DNS is published to SSM natively by `network-foundation.yaml` and read by the Resource Configurations, so there is no role to compromise for endpoint-inventory recon | Low-Medium | M11 | Resolved (eliminated by design) |
+| T15 | Information Disclosure | A workload-account lookup role reads SSM parameters to enumerate VPC/subnet identifiers | Low-Medium | M11 | Resolved (eliminated by design) |
 
 STRIDE coverage spans all six categories: Spoofing (T5, T9), Tampering (T6, T7, T8, T10), Repudiation (T12), Information Disclosure (T3, T4, T11, T14, T15), Denial of Service (T13), and Elevation of Privilege (T1, T2).
 
@@ -56,19 +56,19 @@ The 13 mitigations and the threats they address are listed below, grouped by imp
 
 #### Resolved
 
-- **M1**, Per-environment Service Networks with `AWS_IAM` auth policies that restrict invocation by `aws:PrincipalOrgPaths` to the specific dev/stage/prod OU paths, enforcing cross-environment isolation. *Addresses T1, T2, T7.*
+- **M1**, Per-environment Service Networks with `AWS_IAM` auth policies that restrict invocation by `aws:PrincipalOrgPaths` to the specific dev/test/prod OU paths, enforcing cross-environment isolation. *Addresses T1, T2, T7.*
 - **M2**, Auth policies require **both** `aws:PrincipalOrgID` equality **and** an OU-path match, so org membership alone is insufficient and out-of-scope OUs are denied. *Addresses T1, T2.*
 - **M3**, Centralized Squid forward proxy enforces an FQDN allowlist (`ALLOWED_DOMAINS`), default-deny for non-allowlisted destinations, as the only sanctioned egress path. *Addresses T3.*
 - **M5**, `PrivateDnsEnabled` on the VPC association lets Lattice manage Private Hosted Zones for service domains; the guide documents PHZ precedence and prohibits conflicting Route 53 PHZs in workload VPCs. *Addresses T5.*
 - **M7**, RAM shares set `AllowExternalPrincipals=false` and target explicit OU ARNs only, preventing sharing outside the AWS Organization. *Addresses T1, T8.*
-- **M11**, Least-privilege IAM on custom-resource Lambdas: scoped actions, documented wildcard justifications, and short timeouts limit the recon value of a compromised role. *Addresses T14, T15.*
-- **M10**, VPC Lattice access logs are enabled at the Service Network level by the core IaC: both the CDK `VpcLatticeCoreStack` and the CloudFormation `vpc-lattice-resource-gateways.yaml` create a CloudWatch log group per environment per log type and attach an `AWS::VpcLattice::AccessLogSubscription` for the `SERVICE` and `RESOURCE` log types to each of the three Service Networks (`/lattice/{env}/service-access-logs` and `/lattice/{env}/resource-access-logs`); Container Insights on the Squid cluster adds proxy-side visibility. This provides the authoritative audit trail for invocations and non-repudiation. *Addresses T3, T6, T12.*
+- **M11**, The repository is now fully Lambda-free, so there is no VPCE DNS lookup function and no lookup role on either path. Endpoint DNS is resolved natively: the CDK path reads each endpoint's `DnsEntries`, and the CloudFormation path reads SSM parameters that `network-foundation.yaml` publishes from those same `DnsEntries` (consumed via `AWS::SSM::Parameter::Value<String>`). The workload association (both paths) resolves the VPC ID via a native `AWS::SSM::Parameter::Value` with the service network ID passed as a parameter. With no `ec2:DescribeVpcEndpoints` role and no lookup role anywhere, the recon surface those roles represented is removed entirely. *Eliminates T14 and T15 by design.*
+- **M10**, VPC Lattice access logs are enabled at the Service Network level by the core IaC: both the CDK `VpcLatticeCoreStack` and the CloudFormation `vpc-lattice-resource-gateways.yaml` create a CloudWatch log group per environment per log type and attach an `AWS::VpcLattice::AccessLogSubscription` for the `SERVICE` and `RESOURCE` log types to each of the three Service Networks (`/netfabric/{env}/service-access-logs` and `/netfabric/{env}/resource-access-logs`); Container Insights on the Squid cluster adds proxy-side visibility. This provides the authoritative audit trail for invocations and non-repudiation. *Addresses T3, T6, T12.*
 
 #### In Progress
 
 - **M4**, Centralized egress architecture: workload VPCs have no direct IGW/NAT path, so internet-bound traffic must traverse the Lattice-exposed proxy. Enforced via workload-account route tables and service control policies (SCPs) denying IGW/NAT creation, controls that live **outside** these stacks. *Addresses T4, T11.*
 - **M6**, Least-privilege separation of duties: only Network-account operators/pipeline can change central Lattice/RAM config; protect with strong IAM, multi-factor authentication (MFA), change control, and `cdk-nag` review. *Addresses T6, T7, T8.*
-- **M9**, Restrict who can create Interface VPC endpoints in the Endpoint VPC and validate discovered DNS entries; the lookup filters to Interface endpoints in the specific VPC only. *Addresses T9.*
+- **M9**, Restrict who can create Interface VPC endpoints in the Endpoint VPC and validate the DNS entries wired into the Resource Configurations; `network-foundation.yaml` publishes DNS only for the interface endpoints it owns in the specific Endpoint VPC, and the Resource Configurations read those values from SSM. *Addresses T9.*
 - **M12**, Multi-AZ Resource Gateways, cross-zone NLB, and Fargate auto-recovery provide resilience; service quotas, autoscaling, and per-tenant limits contain denial-of-service on the shared fabric. *Addresses T13.*
 - **M13**, Explicit security groups (no `0.0.0.0/0`) on Resource Gateways, Squid tasks, and the NLB; only required ports (443 to endpoints, 3128 to Squid) permitted, sourced from SSM-managed SGs. *Addresses T4, T11.*
 
@@ -82,44 +82,47 @@ The CDK application runs the `cdk-nag` `AwsSolutionsChecks` aspect at synthesis,
 
 | Rule | Resource (CDK path) | Resolution / suppression rationale |
 |------|---------------------|------------------------------------|
-| `AwsSolutions-IAM5` | `VpceDnsLookup` role default policy (endpoints stack) | `ec2:DescribeVpcEndpoints` does not support resource-level permissions; `Resource: *` is required per AWS IAM documentation. Relates to **T14**. |
-| `AwsSolutions-IAM5` | `LookupRole` policy (workload-association stack) | `vpc-lattice:ListServiceNetworks` does not support resource-level permissions; `Resource: *` is required per AWS IAM documentation. Relates to **T15**. |
+| `CdkNagValidationFailure` | `EndpointRgSg` and `EgressRgSg` (network-foundation stack) | `AwsSolutions-EC23` cannot evaluate the ingress source because it is the VPC `CidrBlock` intrinsic (`Fn::GetAtt`), not a literal. Ingress is scoped to the VPC CIDR and the VPC Lattice managed prefix list, never `0.0.0.0/0` or `::/0`. |
 | `AwsSolutions-IAM5` | `SquidTaskDef` task-role default policy (egress stack) | ECS Exec (`enableExecuteCommand`) requires `ssmmessages:*` with a wildcard resource per AWS documentation; scoped to the task role only. |
-| `AwsSolutions-IAM5` | `LookupProvider` framework `onEvent` role default policy (workload-association stack) | The CDK Provider framework requires `lambda:InvokeFunction` with a `:*` suffix to invoke function versions/aliases; pinned to the single lookup function ARN. |
-| `AwsSolutions-IAM4` | `VpceDnsLookup` service role; `AwsCustomResource` framework role (endpoints stack); `LookupRole` and `LookupProvider` framework role (workload-association stack) | `AWSLambdaBasicExecutionRole` is the appropriate managed policy for custom-resource Lambdas that only need CloudWatch Logs write access. |
-| `AwsSolutions-L1` | `AwsCustomResource` framework Lambda (endpoints stack); `LookupProvider` framework Lambda (workload-association stack) | The framework Lambda runtime is managed by CDK and updated with CDK releases; it cannot be overridden directly. |
+| `AwsSolutions-IAM5` | `SquidTaskDef` execution-role default policy (egress stack) | `ecr:GetAuthorizationToken` does not support resource-level permissions; the wildcard is required per AWS documentation. ECR pull actions are scoped to the specific repository. |
 | `AwsSolutions-ECS2` | `SquidTaskDef` (egress stack) | `ALLOWED_DOMAINS` is a non-sensitive configuration value (a public FQDN allowlist); it contains no secrets or credentials, so Secrets Manager / SSM SecureString is not warranted. |
 | `AwsSolutions-ELB2` | `SquidNlb` (egress stack) | The NLB is internal and reachable only via the VPC Lattice Resource Gateway; observability is provided by VPC Lattice access logs at the Service Network level rather than S3 access logs (M10). |
+| `AwsSolutions-CB4` | CodeBuild project (squid-image-build stack) | The project builds a public Squid container image; KMS encryption of build artifacts is not required. |
+| `AwsSolutions-IAM5` | CodeBuild role (squid-image-build stack) | `ecr:GetAuthorizationToken` and the CodeBuild log/report permissions require wildcard resources per AWS documentation. |
+| `AwsSolutions-IAM4` | Validator instance role (workload-validator stack) | `AmazonSSMManagedInstanceCore` is the AWS-recommended managed policy for Session Manager managed instances. |
+| `AwsSolutions-IAM5` | Validator instance role (workload-validator stack) | `ssm:DescribeInstanceInformation` does not support resource-level permissions; read-only validation call. |
+| `AwsSolutions-EC28` / `AwsSolutions-EC29` | Validator instance (workload-validator stack) | Throwaway, short-lived validation host; detailed monitoring and termination protection / Auto Scaling are not warranted. |
 
-The `VpcLatticeCoreStack` carries **no** suppressions, its Service Networks, RAM shares, and (CloudFormation-path) auth policies synthesized cleanly against the rule pack. The two `IAM5` suppressions on `DescribeVpcEndpoints` and `ListServiceNetworks` are the same three justified `Resource: '*'` uses examined in the [IAM least-privilege review](#iam-least-privilege-review) below; the cross-reference is intentional, so the threat model (T14, T15), the IAM review, and the `cdk-nag` suppression all point at the same three places.
+The `VpcLatticeCoreStack`, the `VpcLatticeEndpointsStack`, and the workload-association StackSet carry **no** suppressions; their Service Networks, RAM shares, interface endpoints, Resource Configurations, and the VPC association synthesize cleanly against the rule pack. The CDK uses **no Lambda**, so there are no custom-resource or provider-framework suppressions. The CloudFormation path is also Lambda-free: it resolves endpoint DNS from SSM parameters that `network-foundation.yaml` publishes from `DnsEntries`, so there is no custom-resource function to review on either path.
 
 ## IAM least-privilege review
 
 **Result: pass.** Every IAM policy in the IaC enumerates explicit actions; there are no wildcard actions (`*` or `service:*`) anywhere.
 
 - **No wildcard actions.** No policy grants `*` or a service-level `service:*` action.
-- **Three justified `Resource: '*'` uses**, each on an action that AWS does not allow to be resource-scoped, and each carrying the `AwsSolutions-IAM5` suppression noted above:
-  1. `ec2:DescribeVpcEndpoints` on the VPCE DNS Lookup Lambda, `Describe*` has no resource-level support (relates to **T14**).
-  2. `vpc-lattice:ListServiceNetworks` on the Workload Lookup Lambda, `List*` has no resource-level support (relates to **T15**).
-  3. `ssmmessages:*` channel actions plus `logs:DescribeLogGroups` on the Squid ECS task role, required by ECS Exec per AWS documentation.
-- **Narrow scopes where AWS supports them.** `ssm:GetParameter` is pinned to a single parameter ARN; `lambda:InvokeFunction` is pinned to a single function ARN; the Squid execution-role logging permission is pinned to a single log-group ARN.
-- **Managed-policy usage is minimal and appropriate.** Only `AWSLambdaBasicExecutionRole` is attached, and only to custom-resource Lambdas that need CloudWatch Logs write access (the `AwsSolutions-IAM4` suppressions above).
-- **Service Network auth policies are resource-based, not least-privilege findings.** The VPC Lattice Service Network auth policies use `Principal: '*'` and `Resource: '*'`, but they are **resource-based authorization policies** constrained by `Condition` (`aws:PrincipalOrgID` plus `aws:PrincipalOrgPaths`). This is the prescribed isolation pattern described in [Phase 1](04-phase1-foundation.md) and [Security and Access Control](06-phase3-centralized-egress.md), the broad principal is intentional because the `Condition` is what scopes access to the right OUs (M1, M2). It is not an over-permissive identity policy.
+- **Justified `Resource: '*'` uses**, each on an action that AWS does not allow to be resource-scoped:
+  1. `ssmmessages:*` on the Squid ECS task role, required by ECS Exec per AWS documentation (carries an `AwsSolutions-IAM5` suppression).
+  2. `ecr:GetAuthorizationToken` on the Squid execution role and the CodeBuild role, no resource-level support (carries `AwsSolutions-IAM5` suppressions); ECR pull and push are otherwise scoped to the specific repository.
+  3. `ssm:DescribeInstanceInformation` on the throwaway validator instance role, read-only, no resource-level support.
+- **No `ListServiceNetworks`, and no lookup role anywhere.** The repository is fully Lambda-free; endpoint DNS is resolved natively (CDK from `DnsEntries`, CloudFormation from SSM parameters that `network-foundation.yaml` publishes from `DnsEntries`), so there is no `ec2:DescribeVpcEndpoints` role on either path. The workload association passes the service network ID as a parameter and resolves the VPC ID via a native `AWS::SSM::Parameter::Value`, so there is no `vpc-lattice:ListServiceNetworks` grant and no lookup role in either path.
+- **Narrow scopes where AWS supports them.** The Squid execution-role logging permission is pinned to a single log-group ARN; ECR pull is scoped to the proxy repository.
+- **Managed-policy usage is minimal and appropriate.** `AmazonSSMManagedInstanceCore` is attached only to the throwaway validator instance for Session Manager (the `AwsSolutions-IAM4` suppression above).
+- **Service Network auth policies are resource-based, not least-privilege findings.** The VPC Lattice Service Network auth policies use `Principal: '*'` and `Resource: '*'`, but they are **resource-based authorization policies** constrained by `Condition` (`aws:PrincipalOrgID` + `aws:PrincipalOrgPaths`). This is the prescribed isolation pattern described in [Phase 1](04-phase1-foundation.md) and [Security and Access Control](06-phase3-centralized-egress.md), the broad principal is intentional because the `Condition` is what scopes access to the right OUs (M1, M2). It is not an over-permissive identity policy.
 
 ## Security group review
 
 **Result: pass.** No security group in the IaC permits unrestricted **ingress**, and every port declared is explicit and minimal. The two IaC paths differ in *where* their security groups come from, so both are covered below.
 
-- **CDK path imports SGs from the Landing Zone Accelerator (LZA).** The CDK stacks author **zero** security groups inline, there are no `addIngressRule` calls and no `0.0.0.0/0`/`::/0` rules. Every SG attached to an ENI-creating resource (the Endpoint Resource Gateway, the Egress Resource Gateway, and the Squid Fargate tasks) is **imported by ID from LZA-managed SSM parameters** (for example `endpoint-rg-sg` and the egress SG); their rules live in LZA, not in this repository (assumption A004, residual risk 3).
+- **CDK path authors its security groups inline (self-contained).** The `NetworkFoundationStack` creates the Endpoint Resource Gateway SG (ingress TCP 443 from the Endpoint VPC CIDR and the VPC Lattice managed prefix list) and the Egress Resource Gateway / Squid SG (ingress TCP 3128 from the Egress VPC CIDR and the Lattice prefix list); the workload-association StackSet creates a workload SG whose only rules are **egress** to the Lattice prefix list on TCP 443 and 3128. There is **no `0.0.0.0/0`/`::/0` ingress** on any of them. Because the ingress source is the VPC `CidrBlock` intrinsic, `cdk-nag` `AwsSolutions-EC23` cannot evaluate it and is suppressed with that written justification (see the table above). If you instead re-point the IaC to externally managed (for example LZA) security groups, their rules live outside this repository (assumption A004, residual risk 3).
 - **The CloudFormation egress template authors its SGs inline, reviewed and sound.** `cloudformation/squid-egress-proxy.yaml` is self-contained and defines two security groups directly. Their **ingress is tightly scoped**: TCP 3128 only, sourced from the **VPC Lattice managed prefix list** and the **Egress VPC CIDR** (for NLB health checks), there is **no `0.0.0.0/0` ingress on any port**. Their **egress** intentionally permits TCP 443/80 to `0.0.0.0/0`: a forward proxy must be able to reach arbitrary internet destinations, and destination control is enforced by the **Squid FQDN allowlist**, not by the security group. This is a deliberate, documented design choice (the same rationale as the egress architecture in [Phase 3](06-phase3-centralized-egress.md)), not an open-ingress finding. The other CloudFormation templates (`vpc-lattice-resource-gateways.yaml`, `vpc-lattice-workload-vpc-association.yaml`) author no security groups.
 - **Ports are explicit and minimal across both paths.** Every port declared is stated explicitly: **TCP 443** for the endpoint Resource Configurations and **TCP 3128** for the Squid Resource Configuration, NLB listener, and target group. The egress NLB is internal (`internetFacing: false` / `Scheme: internal`) with no public IP, so it is reachable only via the Resource Gateway.
 - **Outbound internet is via the NAT path after filtering.** Squid reaches the internet through the NAT Gateway only after the FQDN allowlist is applied; the `0.0.0.0/0` egress on the proxy SG is the mechanism that lets allowlisted traffic leave, gated upstream by Squid.
 
-**External control to confirm (assumption A004).** On the **CDK path**, because the attached SGs are imported, their rules cannot be validated from this repository, operators must confirm in LZA that the imported security groups restrict ingress as intended: the `endpoint-rg-sg` to **TCP 443**, and the Squid/egress SG to **TCP 3128**, each sourced from the Resource Gateway / Lattice CIDR ranges, with **no `0.0.0.0/0` ingress**. On the **CloudFormation path**, the equivalent rules are defined in `squid-egress-proxy.yaml` itself and were reviewed here. This is captured as a residual risk below and as assumption A004 in the threat model.
+**Both paths are reviewable in-repo by default.** The CDK foundation stack and the CloudFormation `network-foundation.yaml` / `squid-egress-proxy.yaml` define their security groups inline, so the ingress rules (TCP 443 to endpoints, TCP 3128 to Squid, sourced from the VPC CIDR and the Lattice managed prefix list, with no `0.0.0.0/0` ingress) were reviewed here directly. The external-dependency caveat (assumption A004, residual risk 3) applies only if you choose to re-point the IaC to externally managed (for example LZA) security groups instead of the bundled ones.
 
 ## Secrets scan
 
-**Result: pass (one finding, remediated).** All IaC files, Lambda source, and documentation deliverables were scanned for hardcoded secrets and real identifiers.
+**Result: pass (one finding, remediated).** All IaC files and documentation deliverables were scanned for hardcoded secrets and real identifiers.
 
 - **Method.** Dedicated secret scanners (`git-secrets`, `trufflehog`, `gitleaks`, `detect-secrets`) were not installed in the review environment, so the scan used **regular-expression pattern matching** for the common secret and identifier formats. This is stated honestly so the method can be reproduced or strengthened: running one of the dedicated scanners in CI is a recommended follow-up.
 - **Clean for credentials and real identifiers.** No AWS access keys (`AKIA`/`ASIA` prefixes), no secret access keys, no passwords, tokens, or API keys, no private keys, and no credentials embedded in connection strings. No real VPC, subnet, security group, or VPC endpoint resource IDs appear in the deliverables.
@@ -142,17 +145,11 @@ Per the security-review requirement to document any finding without a fully impl
 - **Why it is pending.** The controls that prevent this, workload-account **route tables** with no direct internet path and **SCPs denying IGW/NAT creation**, live in the AWS Organization and Landing Zone Accelerator, **outside** these stacks, so they cannot be enforced or validated from this repository.
 - **Recommended remediation.** Enforce, in the organization, route tables that provide no direct internet path for workload VPCs and SCPs that deny IGW/NAT creation in workload OUs, so the Lattice-exposed proxy is the only egress. See [Phase 3: Centralized Egress](06-phase3-centralized-egress.md). **Owner:** the cloud platform / governance team.
 
-### 3. Imported LZA security group rules are an external dependency (A004, external)
+### 3. Externally managed security group rules (A004, conditional)
 
-- **Risk.** The security groups attached to the Resource Gateways and Squid tasks are imported from LZA by ID. If those LZA-managed rules are authored too broadly (for example, an over-wide source CIDR or an unintended `0.0.0.0/0` ingress), the network controls this pattern relies on would be weaker than intended, and this repository cannot detect it.
-- **Why it is accepted.** Importing SGs from LZA is the correct division of responsibility for an LZA-based landing zone, the network team owns SG rules centrally. The trade-off is that SG correctness becomes an external assumption (A004).
-- **Recommended remediation.** Confirm in LZA that `endpoint-rg-sg` permits only TCP 443 and the Squid/egress SG only TCP 3128, sourced from the Resource Gateway / Lattice CIDRs with no `0.0.0.0/0` ingress, and periodically audit those rules. **Owner:** the network / LZA team.
-
-### 4. Lambda runtime-version drift (IaC consistency item)
-
-- **Risk.** The inline Lambda in the endpoints stack references the `PYTHON_3_14` runtime enum, while the CloudFormation template uses `python3.12` and the design specifies **Python 3.12**. The inconsistency is a maintainability and supportability concern rather than an exploitable vulnerability, but divergent runtimes across the two IaC paths can produce subtly different behavior and complicate support.
-- **Why it is open.** It is a small consistency defect not caught until this review.
-- **Recommended remediation.** Align the inline CDK function to **Python 3.12** to match the documented standard and the CloudFormation path (see the [runtime FAQ](12-troubleshooting-faq.md#what-runtime-do-the-lambda-custom-resources-use)). **Owner:** the IaC maintainer, as a routine fix.
+- **Risk.** By default the foundation stacks author the Resource Gateway and workload security groups inline, so their rules are reviewable in this repository. If you re-point the IaC to externally managed (for example LZA) security groups, and those rules are authored too broadly (an over-wide source CIDR or an unintended `0.0.0.0/0` ingress), the network controls this pattern relies on would be weaker than intended, and this repository cannot detect it.
+- **Why it is accepted.** Delegating SG ownership to a central landing zone is a legitimate division of responsibility; the trade-off is that SG correctness then becomes an external assumption (A004). It does not apply to the bundled, in-repo security groups.
+- **Recommended remediation.** If you use externally managed SGs, confirm the endpoint SG permits only TCP 443 and the egress SG only TCP 3128, sourced from the VPC CIDR / Lattice prefix list with no `0.0.0.0/0` ingress, and audit those rules periodically. **Owner:** the network / landing-zone team.
 
 ## Assumptions that scope the threat model
 
@@ -160,10 +157,10 @@ The threat model is bounded by five assumptions. They are not findings; they are
 
 | ID | Area | Assumption |
 |----|------|------------|
-| A001 | Foundation | AWS Organizations, the OU structure, and the Landing Zone Accelerator are correctly configured, and the LZA-managed SSM parameters under `/accelerator/*` contain accurate, trustworthy VPC/subnet/SG IDs. |
+| A001 | Foundation | AWS Organizations and the OU structure are correctly configured. By default the bundled foundation stacks create the VPCs, subnets, and security groups and publish their IDs to SSM under `/netfabric/*`; if you re-point the IaC to an existing landing zone (for example LZA's `/accelerator/*` parameters), those externally managed IDs are assumed accurate and trustworthy. |
 | A002 | AWS services | AWS-managed control-plane services (VPC Lattice, RAM, Organizations, IAM, ECS, NLB) operate correctly and enforce their documented semantics, including `PrincipalOrgID`/`PrincipalOrgPaths` evaluation and RAM `AllowExternalPrincipals=false`. Threats focus on customer misconfiguration, not AWS service-internal compromise (the shared-responsibility boundary). |
 | A003 | Egress | The Squid image and its configuration enforce the `ALLOWED_DOMAINS` allowlist for both HTTP and HTTPS (CONNECT) traffic and deny by default. Image provenance is tracked separately as T10. |
-| A004 | Network | The security groups referenced from SSM permit only the required ports (443 to endpoints, 3128 to Squid/NLB) with restricted CIDR sources and no `0.0.0.0/0` ingress. Validated externally because the SGs are imported from LZA (residual risk 3 above). |
+| A004 | Network | The security groups permit only the required ports (443 to endpoints, 3128 to Squid/NLB) with restricted CIDR sources and no `0.0.0.0/0` ingress. These SGs are authored inline by the foundation stacks and reviewed in-repo by default; this assumption requires external validation only if you re-point to externally managed (LZA) SGs (residual risk 3). |
 | A005 | Authorization | Workload accounts cannot modify the Network account's Lattice resources, auth policies, RAM shares, or Squid configuration; they can only associate their own VPC to a RAM-shared Service Network, enforced by cross-account IAM and SCPs. |
 
 ---

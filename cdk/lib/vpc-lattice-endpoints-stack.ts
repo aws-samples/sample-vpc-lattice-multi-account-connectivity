@@ -9,9 +9,11 @@ export interface VpcLatticeEndpointsStackProps extends cdk.StackProps {
   endpointSubnetBSsmPath: string;
   endpointSubnetCSsmPath: string;
   endpointSgSsmPath: string;
-  serviceNetworkIds: { dev: string; stage: string; prod: string };
+  serviceNetworkIds: { dev: string; test: string; prod: string };
   /** AWS Organizations ID, used to scope the VPC endpoint policies. */
   orgId: string;
+  /** Single token that namespaces every resource Name (Resource Gateway, RCs). */
+  resourcePrefix?: string;
 }
 
 /**
@@ -34,6 +36,8 @@ export interface VpcLatticeEndpointsStackProps extends cdk.StackProps {
 export class VpcLatticeEndpointsStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: VpcLatticeEndpointsStackProps) {
     super(scope, id, props);
+
+    const resourcePrefix = props.resourcePrefix ?? 'netfabric';
 
     // Resolve VPC / subnets / SG from SSM parameters (3 AZs)
     const endpointVpcId = ssm.StringParameter.valueForStringParameter(this, props.endpointVpcSsmPath);
@@ -86,7 +90,7 @@ export class VpcLatticeEndpointsStack extends cdk.Stack {
     const resourceGateway = new cdk.CfnResource(this, 'EndpointResourceGateway', {
       type: 'AWS::VpcLattice::ResourceGateway',
       properties: {
-        Name: 'endpoint-resource-gateway',
+        Name: `${resourcePrefix}-endpoint-resource-gateway`,
         VpcIdentifier: endpointVpcId,
         SubnetIds: subnetIds,
         SecurityGroupIds: [sgId],
@@ -117,7 +121,7 @@ export class VpcLatticeEndpointsStack extends cdk.Stack {
       const rc = new cdk.CfnResource(this, `RC-${ep.key}`, {
         type: 'AWS::VpcLattice::ResourceConfiguration',
         properties: {
-          Name: `${ep.key}-endpoint-rc`,
+          Name: `${resourcePrefix}-${ep.key}-endpoint-rc`,
           ResourceConfigurationType: 'SINGLE',
           ProtocolType: 'TCP',
           ResourceGatewayId: resourceGateway.getAtt('Id'),

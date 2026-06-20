@@ -4,7 +4,7 @@ The [Targeted Business Outcomes](01-business-outcomes.md) section established wh
 
 These prerequisites are global: every implementation phase in this guide (Foundation, Shared Endpoints, Centralized Egress, and Workload Onboarding) assumes they are satisfied. Confirm each item before starting Phase 1, because gaps here surface later as deployment failures that are harder to diagnose.
 
-> **A note on conventions.** All examples use the `us-east-2` Region and placeholder identifiers (for example, organization ID `o-EXAMPLE12345` and OU ARNs of the form `arn:aws:organizations::111111111111:ou/o-EXAMPLE12345/ou-EXAMPLE`). Substitute your own values; no customer-identifying information is implied. The reference implementation deploys **three Service Networks**, one each for dev, stage, and prod, and you should plan capacity and permissions for all three.
+> **A note on conventions.** All examples use the `us-east-2` Region and placeholder identifiers (for example, organization ID `o-EXAMPLE12345` and OU ARNs of the form `arn:aws:organizations::111111111111:ou/o-EXAMPLE12345/ou-EXAMPLE`). Substitute your own values; no customer-identifying information is implied. The reference implementation deploys **three Service Networks**, one each for dev, test, and prod, and you should plan capacity and permissions for all three.
 
 ## 1. Required AWS services and features
 
@@ -23,11 +23,11 @@ The pattern depends on a small set of Organization-wide services being enabled a
 
   | Resource | SSM parameter path convention |
   |----------|-------------------------------|
-  | VPC ID | `/apg-lattice/network/{vpc-name}/id` |
-  | Subnet ID | `/apg-lattice/network/{vpc-name}/subnet/{a\|b\|c}/id` |
-  | Security group ID | `/apg-lattice/network/{vpc-name}/sg/rg/id` |
+  | VPC ID | `/netfabric/network/{vpc-name}/id` |
+  | Subnet ID | `/netfabric/network/{vpc-name}/subnet/{a\|b\|c}/id` |
+  | Security group ID | `/netfabric/network/{vpc-name}/sg/rg/id` |
 
-  For example, the CloudFormation template defaults to `/apg-lattice/network/endpoint-vpc/id` for the Endpoint VPC and `/apg-lattice/network/endpoint-vpc/subnet/a/id` for its first subnet. The two foundation templates (`cloudformation/network-foundation.yaml` and `cloudformation/workload-foundation.yaml`) and the CDK foundation stacks publish these parameters automatically.
+  For example, the CloudFormation template defaults to `/netfabric/network/endpoint-vpc/id` for the Endpoint VPC and `/netfabric/network/endpoint-vpc/subnet/a/id` for its first subnet. The two foundation templates (`cloudformation/network-foundation.yaml` and `cloudformation/workload-foundation.yaml`) and the CDK foundation stacks publish these parameters automatically.
 
   > **If you are using AWS Landing Zone Accelerator (LZA) or another framework that publishes network IDs under a different prefix** (for example, LZA's `/accelerator/network/vpc/{VpcName}/id`): you have two options. Either re-point the IaC's SSM parameter paths to your existing prefix (override `endpointVpcSsmPath`, `egressVpcSsmPath`, `workloadVpcSsmPath`, etc. as CDK context or CloudFormation parameter overrides), **or** skip the foundation templates entirely and rely on your existing parameters. The pattern itself is independent of any specific Landing Zone framework, the foundation templates are a self-contained reference implementation, not a requirement.
 
@@ -40,7 +40,7 @@ The Network account is the central home for shared connectivity. The following V
 - [ ] **An Endpoint VPC** that will host the Resource Gateway for shared AWS service endpoints.
 - [ ] **At least two subnets, one per Availability Zone**, for the Resource Gateway. (See [subnet sizing](#3-subnet-sizing-requirements) below, these must be a minimum of /24.)
 - [ ] **A security group for the Resource Gateway ENIs**, with explicit ingress restricted to the expected source ranges and port 443. Do not use the default VPC security group.
-- [ ] **Pre-deployed interface VPC endpoints in the Endpoint VPC.** The endpoints must already exist; the VPCE DNS lookup Lambda custom resource discovers them dynamically at deploy time and wires each one into a Resource Configuration. The implementation expects the following interface endpoints:
+- [ ] **Pre-deployed interface VPC endpoints in the Endpoint VPC.** The endpoints must already exist; each is wired into a Resource Configuration by its regional DNS name, read natively from the endpoint's `DnsEntries` on the CDK path, or read from the SSM parameters that `network-foundation.yaml` publishes from each endpoint's `DnsEntries` on the CloudFormation path. The implementation expects the following interface endpoints:
 
   | Endpoint (service) | Custom domain exposed through Lattice |
   |--------------------|----------------------------------------|
@@ -57,7 +57,7 @@ The Network account is the central home for shared connectivity. The following V
 
   The CDK implementation expects these **10 endpoints**. The CloudFormation implementation expects an **11th endpoint, `execute-api`** (`execute-api.us-east-2.amazonaws.com`), in addition to the ten above.
 
-  > **Private DNS handling.** Because these endpoints are fronted by VPC Lattice, they are referenced by their VPCE regional DNS name (the per-endpoint regional record), discovered at deploy time by the Lambda custom resource, not by the public service domain. Plan the endpoints' Private DNS configuration so it is appropriate for being fronted by Lattice: the workload-facing service domain (for example, `ssm.us-east-2.amazonaws.com`) is resolved through the Lattice-managed Private Hosted Zone created on the VPC association, while Lattice routes to the endpoint by its regional VPCE DNS name. DNS resolution behavior is covered in detail in the architecture and workload onboarding sections.
+  > **Private DNS handling.** Because these endpoints are fronted by VPC Lattice, they are referenced by their VPCE regional DNS name (the per-endpoint regional record), resolved at deploy time (natively from `DnsEntries` on the CDK path, or from the SSM parameters that `network-foundation.yaml` publishes from `DnsEntries` on the CloudFormation path), not by the public service domain. Plan the endpoints' Private DNS configuration so it is appropriate for being fronted by Lattice: the workload-facing service domain (for example, `ssm.us-east-2.amazonaws.com`) is resolved through the Lattice-managed Private Hosted Zone created on the VPC association, while Lattice routes to the endpoint by its regional VPCE DNS name. DNS resolution behavior is covered in detail in the architecture and workload onboarding sections.
 
 ### Egress VPC
 
@@ -76,7 +76,7 @@ This requirement applies specifically to the Resource Gateway subnets and is imp
 
 ## 4. CLI and tooling version requirements
 
-Choose one deployment path, CDK (TypeScript) or CloudFormation (YAML), and confirm the corresponding tooling. Both paths share the same Lambda runtime requirement.
+Choose one deployment path, CDK (TypeScript) or CloudFormation (YAML), and confirm the corresponding tooling. Neither path uses a Lambda; both resolve endpoint DNS natively (the CDK path from `DnsEntries`, the CloudFormation path from SSM parameters that `network-foundation.yaml` publishes from `DnsEntries`).
 
 ### CDK (TypeScript) path
 
@@ -91,10 +91,6 @@ The CDK project's tooling versions are defined in `cdk/package.json`. Match thes
 
 - [ ] **AWS CLI v2** for deploying and managing the CloudFormation stacks and StackSets.
 
-### Lambda runtime (both paths)
-
-- [ ] **Python 3.12 runtime** for the VPCE DNS lookup Lambda custom resource. Python 3.12 is the required and standard runtime for this pattern (requirement 5.6); the standalone CloudFormation templates specify `python3.12`. The Lambda implements the CloudFormation custom resource response pattern with proper error handling.
-
 ## 5. IAM permissions needed for deployment
 
 Deployment touches the Network account and each workload account. The descriptions below are at the capability level, the principal performing the deployment needs permission to create and manage the listed resource types. Full least-privilege policy definitions and the auth policy model are covered in the security section; this checklist establishes what access the deploying principal requires.
@@ -103,18 +99,16 @@ Deployment touches the Network account and each workload account. The descriptio
 
 - [ ] Create and manage **VPC Lattice** resources: Service Networks, Resource Gateways, Resource Configurations, Service Network associations, and IAM auth policies.
 - [ ] Create and manage **RAM resource shares** (and target OUs as principals).
-- [ ] Create and manage **IAM roles** for the Lambda custom resource and the egress workload.
-- [ ] Create and manage **Lambda functions** (the VPCE DNS lookup custom resource).
+- [ ] Create and manage **IAM roles** for the egress workload.
 - [ ] Create and manage **Amazon ECS / AWS Fargate and Network Load Balancer (NLB) resources** for the centralized Squid egress.
-- [ ] **Read SSM parameters** under the `/apg-lattice/network/...` paths (or your equivalent if you re-pointed the IaC to a different SSM prefix).
+- [ ] **Read SSM parameters** under the `/netfabric/network/...` paths (or your equivalent if you re-pointed the IaC to a different SSM prefix).
 - [ ] Create and write to **Amazon CloudWatch Logs**.
 
 ### In each workload account
 
 - [ ] Create the **VPC Lattice service-network VPC association** (with `PrivateDnsEnabled`).
-- [ ] Create a **Lambda-backed custom resource**, including its **IAM role** and **Lambda function**.
-- [ ] **`ssm:GetParameter`** on `/apg-lattice/*` (or your equivalent SSM prefix) to resolve the workload VPC ID.
-- [ ] **`vpc-lattice:ListServiceNetworks`** to discover the RAM-shared Service Network to associate with.
+- [ ] Create a **security group** in the workload VPC (egress to the VPC Lattice managed prefix list on TCP 443 and 3128, so traffic can reach the shared endpoints and the egress proxy).
+- [ ] **`ssm:GetParameter`** on `/netfabric/*` (or your equivalent SSM prefix); CloudFormation resolves the workload VPC ID natively from this parameter (no Lambda). The service network ID is passed in as a stack parameter.
 
 ### Bootstrapping
 
@@ -133,14 +127,13 @@ Deployment touches the Network account and each workload account. The descriptio
 | Organization | All-features Organizations spanning Network + workload accounts | Management account |
 | Organization | RAM sharing enabled (`aws ram enable-sharing-with-aws-organization`) | Management account |
 | Region | VPC Lattice available (examples use `us-east-2`) | Chosen Region |
-| Tooling/IDs | Network IDs published to `/apg-lattice/network/...` (or your equivalent SSM prefix) | Network + workload accounts |
+| Tooling/IDs | Network IDs published to `/netfabric/network/...` (or your equivalent SSM prefix) | Network + workload accounts |
 | Topology | Endpoint VPC: 2+ subnets (/24 min), Resource Gateway SG | Network account |
 | Topology | Egress VPC: 2+ subnets, NAT Gateway path, SG | Network account |
 | Topology | Pre-deployed interface endpoints (10 CDK / 11 CloudFormation) | Network account (Endpoint VPC) |
 | Sizing | Resource Gateway subnets minimum /24 | Network account |
 | Tooling | Node.js 20.x, CDK/`aws-cdk-lib` `^2.150.0`, cdk-nag `^2.28.0`, TypeScript `~5.4` | CDK path |
 | Tooling | AWS CLI v2 | CloudFormation path |
-| Tooling | Python 3.12 Lambda runtime | Both paths |
 | Access | Deployment IAM capabilities (Network + workload) | Both accounts |
 | Access | `cdk bootstrap` per account/Region | CDK path |
 

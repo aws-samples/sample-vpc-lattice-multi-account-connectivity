@@ -26,6 +26,9 @@ export interface WorkloadAssociationStackSetStackProps extends cdk.StackProps {
 
   /** Region(s) to deploy stack instances into. */
   regions: string[];
+
+  /** Single token that namespaces the StackSet name. */
+  resourcePrefix?: string;
 }
 
 /**
@@ -127,7 +130,7 @@ export class WorkloadAssociationStackSetStack extends cdk.Stack {
     };
 
     new cfn.CfnStackSet(this, 'WorkloadAssociationStackSet', {
-      stackSetName: 'apg-lattice-workload-association',
+      stackSetName: `${props.resourcePrefix ?? 'netfabric'}-workload-association`,
       description:
         'Associates workload VPCs in the target OU with the VPC Lattice service network (private DNS, all domains).',
       permissionModel: 'SERVICE_MANAGED',
