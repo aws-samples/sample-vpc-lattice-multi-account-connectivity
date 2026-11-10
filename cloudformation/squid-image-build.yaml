@@ -22,6 +22,39 @@ Parameters:
 
 Resources:
 
+  # ------------------------------------------------------------
+  # Customer managed KMS key for the ECR repository, CodeBuild artifacts/cache
+  # and the build CloudWatch log group.
+  # ------------------------------------------------------------
+  BuildKmsKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: CMK for the Squid image build (ECR repository, CodeBuild, build logs)
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EnableRootAccountAdmin
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: AllowCloudWatchLogs
+            Effect: Allow
+            Principal:
+              Service: !Sub 'logs.${AWS::Region}.amazonaws.com'
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:Describe*
+            Resource: '*'
+            Condition:
+              ArnLike:
+                'kms:EncryptionContext:aws:logs:arn': !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+
   EcrRepository:
     Type: AWS::ECR::Repository
     Properties:
@@ -32,7 +65,8 @@ Resources:
         ScanOnPush: true
       ImageTagMutability: IMMUTABLE
       EncryptionConfiguration:
-        EncryptionType: AES256
+        EncryptionType: KMS
+        KmsKey: !GetAtt BuildKmsKey.Arn
       LifecyclePolicy:
         LifecyclePolicyText: |
           {
@@ -57,8 +91,57 @@ Resources:
         - '/aws/codebuild/${Prefix}-squid-proxy-build'
         - Prefix: !Select [1, !Split ['/', !Ref SsmPrefix]]
       RetentionInDays: 30
+      KmsKeyId: !GetAtt BuildKmsKey.Arn
     DeletionPolicy: Delete
     UpdateReplacePolicy: Delete
+
+  CodeBuildPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Permissions for the Squid image CodeBuild project (ECR push, SSM image URI, logs, KMS)
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ECRAuth
+            Effect: Allow
+            Action: ecr:GetAuthorizationToken
+            Resource: '*'
+          - Sid: ECRPush
+            Effect: Allow
+            Action:
+              - ecr:BatchCheckLayerAvailability
+              - ecr:CompleteLayerUpload
+              - ecr:InitiateLayerUpload
+              - ecr:PutImage
+              - ecr:UploadLayerPart
+            Resource: !GetAtt EcrRepository.Arn
+          - Sid: SSMPut
+            Effect: Allow
+            Action: ssm:PutParameter
+            Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SsmPrefix}/egress/squid-image-uri'
+          - Sid: Logs
+            Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: !GetAtt BuildLogGroup.Arn
+          - Sid: BuildKmsKey
+            Effect: Allow
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource: !GetAtt BuildKmsKey.Arn
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_111
+            comment: ecr:GetAuthorizationToken does not support resource-level permissions and must use Resource '*'. All other actions are scoped to specific ARNs.
+      guard:
+        SuppressedRules:
+          - IAM_POLICYDOCUMENT_NO_WILDCARD_RESOURCE_RULE
 
   CodeBuildRole:
     Type: AWS::IAM::Role
@@ -70,34 +153,8 @@ Resources:
             Principal:
               Service: codebuild.amazonaws.com
             Action: sts:AssumeRole
-      Policies:
-        - PolicyName: SquidBuildPolicy
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Sid: ECRAuth
-                Effect: Allow
-                Action: ecr:GetAuthorizationToken
-                Resource: '*'
-              - Sid: ECRPush
-                Effect: Allow
-                Action:
-                  - ecr:BatchCheckLayerAvailability
-                  - ecr:CompleteLayerUpload
-                  - ecr:InitiateLayerUpload
-                  - ecr:PutImage
-                  - ecr:UploadLayerPart
-                Resource: !GetAtt EcrRepository.Arn
-              - Sid: SSMPut
-                Effect: Allow
-                Action: ssm:PutParameter
-                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SsmPrefix}/egress/squid-image-uri'
-              - Sid: Logs
-                Effect: Allow
-                Action:
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                Resource: !GetAtt BuildLogGroup.Arn
+      ManagedPolicyArns:
+        - !Ref CodeBuildPolicy
 
   SquidBuildProject:
     Type: AWS::CodeBuild::Project
@@ -108,6 +165,7 @@ Resources:
       Description: Builds the Squid proxy image and pushes to ECR
       TimeoutInMinutes: 15
       ServiceRole: !GetAtt CodeBuildRole.Arn
+      EncryptionKey: !GetAtt BuildKmsKey.Arn
       Environment:
         ComputeType: BUILD_GENERAL1_SMALL
         Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0

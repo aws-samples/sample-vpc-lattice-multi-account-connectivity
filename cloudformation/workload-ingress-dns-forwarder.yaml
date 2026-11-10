@@ -48,6 +48,17 @@ Parameters:
     Description: Tag key that opts a Resource Configuration in to ingress DNS publishing.
 
 Resources:
+  ForwarderPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Allows the forwarder rule to put events on the Network account ingress DNS bus
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: events:PutEvents
+            Resource: !Sub 'arn:${AWS::Partition}:events:${AWS::Region}:${NetworkAccountId}:event-bus/${IngressDnsBusName}'
+
   ForwarderRole:
     Type: AWS::IAM::Role
     Properties:
@@ -59,14 +70,8 @@ Resources:
             Principal:
               Service: events.amazonaws.com
             Action: sts:AssumeRole
-      Policies:
-        - PolicyName: ForwardToNetworkBus
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action: events:PutEvents
-                Resource: !Sub 'arn:${AWS::Partition}:events:${AWS::Region}:${NetworkAccountId}:event-bus/${IngressDnsBusName}'
+      ManagedPolicyArns:
+        - !Ref ForwarderPolicy
 
   ForwardRcTagChanges:
     Type: AWS::Events::Rule

@@ -530,6 +530,14 @@ Resources:
       RouteTableId: !Ref EgressPublicRouteTable
       DestinationCidrBlock: 0.0.0.0/0
       GatewayId: !Ref EgressInternetGateway
+    Metadata:
+      guard:
+        SuppressedRules:
+          - NO_UNRESTRICTED_ROUTE_TO_IGW
+      comment: >
+        Intentional. This route table serves only the Egress VPC public subnets
+        that host the NAT gateways. Private subnets never route to the IGW and
+        reach the internet only through the NAT gateways and the Squid allowlist.
 
   EgressPublicSubnetARouteAssoc:
     Type: AWS::EC2::SubnetRouteTableAssociation

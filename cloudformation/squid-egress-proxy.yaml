@@ -189,6 +189,10 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub '${AWS::StackName}-proxy-sg'
+    Metadata:
+      guard:
+        SuppressedRules:
+          - EC2_SECURITY_GROUP_EGRESS_OPEN_TO_WORLD_RULE
 
   ResourceGatewaySecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -431,6 +435,15 @@ Resources:
       DefaultActions:
         - Type: forward
           TargetGroupArn: !Ref TargetGroup
+    Metadata:
+      guard:
+        SuppressedRules:
+          - ELBV2_LISTENER_SSL_POLICY_RULE
+      comment: >
+        Intentional TCP listener (not TLS). This is an internal NLB that carries
+        an HTTP forward-proxy protocol (CONNECT) from the VPC Lattice Resource
+        Gateway. Client TLS to the destination is end to end through the CONNECT
+        tunnel, so a TLS listener (and its certificate) would not apply here.
 
   # ------------------------------------------------------------
   # VPC Lattice egress Resource Gateway + Resource Configuration

@@ -74,13 +74,58 @@ Conditions:
 
 Resources:
   # ------------------------------------------------------------
+  # Customer managed KMS key for the DLQ, the DynamoDB tracking table and the
+  # state machine log group.
+  # ------------------------------------------------------------
+  DnsKmsKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: CMK for the ingress DNS automation (SQS DLQ, DynamoDB tracker, state machine logs)
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EnableRootAccountAdmin
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: AllowCloudWatchLogs
+            Effect: Allow
+            Principal:
+              Service: !Sub 'logs.${AWS::Region}.amazonaws.com'
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:Describe*
+            Resource: '*'
+            Condition:
+              ArnLike:
+                'kms:EncryptionContext:aws:logs:arn': !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+          - Sid: AllowEventBridgeToSendToEncryptedDlq
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action:
+              - kms:Decrypt
+              - kms:GenerateDataKey
+            Resource: '*'
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref AWS::AccountId
+
+  # ------------------------------------------------------------
   # Dead letter queue for failed rule deliveries
   # ------------------------------------------------------------
   DlqQueue:
     Type: AWS::SQS::Queue
     Properties:
       QueueName: !Sub '${ResourcePrefix}-ingress-dns-dlq'
-      SqsManagedSseEnabled: true
+      KmsMasterKeyId: !GetAtt DnsKmsKey.Arn
+      KmsDataKeyReusePeriodSeconds: 300
       MessageRetentionPeriod: 1209600
 
   # Enforce TLS in transit on the DLQ.
@@ -100,6 +145,18 @@ Resources:
             Condition:
               Bool:
                 aws:SecureTransport: 'false'
+          # EventBridge needs an explicit allow to deliver failed events to a rule DLQ.
+          - Sid: AllowEventBridgeRulesToSend
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt DlqQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn:
+                  - !GetAtt DnsAutomationRule.Arn
+                  - !If [HasOrgId, !GetAtt DnsAutomationRuleCrossAccount.Arn, !Ref 'AWS::NoValue']
 
   # ------------------------------------------------------------
   # DynamoDB table tracking published records for clean deletion
@@ -111,6 +168,8 @@ Resources:
       BillingMode: PAY_PER_REQUEST
       SSESpecification:
         SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !GetAtt DnsKmsKey.Arn
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: true
       AttributeDefinitions:
@@ -128,10 +187,75 @@ Resources:
     Properties:
       LogGroupName: !Sub '/${ResourcePrefix}/ingress-dns-automation/state-machine'
       RetentionInDays: 30
+      KmsKeyId: !GetAtt DnsKmsKey.Arn
 
   # ------------------------------------------------------------
   # IAM role for the state machine (least privilege)
   # ------------------------------------------------------------
+  StepFunctionsPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Ingress DNS automation state machine permissions (EC2 read, DynamoDB tracker, Route 53 zone, KMS, log delivery)
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DescribeSneAssociations
+            Effect: Allow
+            Action: ec2:DescribeVpcEndpointAssociations
+            Resource: '*'
+          - Sid: TrackerTable
+            Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:DeleteItem
+            Resource: !GetAtt DnsRecordTracker.Arn
+          - Sid: TrackerTableKms
+            Effect: Allow
+            Action:
+              - kms:Decrypt
+              - kms:GenerateDataKey
+              - kms:DescribeKey
+            Resource: !GetAtt DnsKmsKey.Arn
+            Condition:
+              StringEquals:
+                'kms:ViaService': !Sub 'dynamodb.${AWS::Region}.amazonaws.com'
+          - Sid: IngressZoneRecords
+            Effect: Allow
+            Action:
+              - route53:ListResourceRecordSets
+              - route53:ChangeResourceRecordSets
+            Resource: !Sub 'arn:${AWS::Partition}:route53:::hostedzone/${PrivateHostedZoneId}'
+          # Step Functions log delivery: these CloudWatch Logs delivery actions do not
+          # support resource-level permissions, so '*' is required by the service.
+          # See "Logging using CloudWatch Logs" in the Step Functions developer guide.
+          - Sid: StateMachineLogDelivery
+            Effect: Allow
+            Action:
+              - logs:CreateLogDelivery
+              - logs:GetLogDelivery
+              - logs:UpdateLogDelivery
+              - logs:DeleteLogDelivery
+              - logs:ListLogDeliveries
+              - logs:PutResourcePolicy
+              - logs:DescribeResourcePolicies
+              - logs:DescribeLogGroups
+            Resource: '*'
+          - Sid: StateMachineLogStreams
+            Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: !GetAtt StateMachineLogGroup.Arn
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_111
+            comment: The Step Functions log-delivery actions (logs:CreateLogDelivery and related) do not support resource-level permissions and must use Resource '*'. Log stream writes are scoped to the state machine log group.
+      guard:
+        SuppressedRules:
+          - IAM_POLICYDOCUMENT_NO_WILDCARD_RESOURCE_RULE
+
   StepFunctionsRole:
     Type: AWS::IAM::Role
     Properties:
@@ -143,38 +267,8 @@ Resources:
             Principal:
               Service: states.amazonaws.com
             Action: sts:AssumeRole
-      Policies:
-        - PolicyName: IngressDnsAutomation
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action: ec2:DescribeVpcEndpointAssociations
-                Resource: '*'
-              - Effect: Allow
-                Action:
-                  - dynamodb:GetItem
-                  - dynamodb:PutItem
-                  - dynamodb:DeleteItem
-                Resource: !GetAtt DnsRecordTracker.Arn
-              - Effect: Allow
-                Action:
-                  - route53:ListResourceRecordSets
-                  - route53:ChangeResourceRecordSets
-                Resource: !Sub 'arn:${AWS::Partition}:route53:::hostedzone/${PrivateHostedZoneId}'
-              - Effect: Allow
-                Action:
-                  - logs:CreateLogDelivery
-                  - logs:GetLogDelivery
-                  - logs:UpdateLogDelivery
-                  - logs:DeleteLogDelivery
-                  - logs:ListLogDeliveries
-                  - logs:PutResourcePolicy
-                  - logs:DescribeResourcePolicies
-                  - logs:DescribeLogGroups
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                Resource: '*'
+      ManagedPolicyArns:
+        - !Ref StepFunctionsPolicy
 
   # ------------------------------------------------------------
   # Step Functions state machine (Lambda-free, JSONata + SDK integrations)
@@ -363,6 +457,17 @@ Resources:
   # ------------------------------------------------------------
   # EventBridge rule (default bus): trigger on RC publish-tag changes
   # ------------------------------------------------------------
+  EventBridgeTargetPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Allows EventBridge rules to start the ingress DNS state machine
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: states:StartExecution
+            Resource: !Ref DnsConfigStateMachine
+
   EventBridgeTargetRole:
     Type: AWS::IAM::Role
     Properties:
@@ -374,14 +479,8 @@ Resources:
             Principal:
               Service: events.amazonaws.com
             Action: sts:AssumeRole
-      Policies:
-        - PolicyName: StartStateMachine
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action: states:StartExecution
-                Resource: !Ref DnsConfigStateMachine
+      ManagedPolicyArns:
+        - !Ref EventBridgeTargetPolicy
 
   DnsAutomationRule:
     Type: AWS::Events::Rule

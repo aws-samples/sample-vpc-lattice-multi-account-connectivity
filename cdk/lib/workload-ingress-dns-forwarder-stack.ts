@@ -43,10 +43,14 @@ export class WorkloadIngressDnsForwarderStack extends cdk.Stack {
       roleName: `${resourcePrefix}-ingress-dns-forwarder-role-${this.region}`,
       assumedBy: new iam.ServicePrincipal('events.amazonaws.com'),
     });
-    forwarderRole.addToPolicy(new iam.PolicyStatement({
-      actions: ['events:PutEvents'],
-      resources: [targetBusArn],
-    }));
+    const forwarderPolicy = new iam.ManagedPolicy(this, 'ForwarderPolicy', {
+      description: 'Allows the forwarder rule to put events on the Network account ingress DNS bus',
+      roles: [forwarderRole],
+      statements: [new iam.PolicyStatement({
+        actions: ['events:PutEvents'],
+        resources: [targetBusArn],
+      })],
+    });
 
     // Forward this account's RC publish-tag changes to the Network DNS bus.
     new events.CfnRule(this, 'ForwardRcTagChanges', {
@@ -70,8 +74,8 @@ export class WorkloadIngressDnsForwarderStack extends cdk.Stack {
 
     new cdk.CfnOutput(this, 'TargetBusArn', { value: targetBusArn });
 
-    NagSuppressions.addResourceSuppressions(forwarderRole, [
+    NagSuppressions.addResourceSuppressions(forwarderPolicy, [
       { id: 'AwsSolutions-IAM5', reason: 'events:PutEvents is scoped to the single Network-account ingress DNS bus ARN; no wildcard resource.' },
-    ], true);
+    ]);
   }
 }

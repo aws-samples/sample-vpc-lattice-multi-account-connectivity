@@ -1,5 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as kms from 'aws-cdk-lib/aws-kms';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
@@ -59,9 +60,33 @@ export class VpcLatticeIngressDnsStack extends cdk.Stack {
     const privateHostedZoneId = props.privateHostedZoneId
       ?? ssm.StringParameter.valueForStringParameter(this, `${ssmPrefix}/ingress/hosted-zone-id`);
 
+    // Customer managed key for the DLQ, the DynamoDB tracker and the state machine logs.
+    const dnsKey = new kms.Key(this, 'DnsKmsKey', {
+      description: 'CMK for the ingress DNS automation (SQS DLQ, DynamoDB tracker, state machine logs)',
+      enableKeyRotation: true,
+    });
+    dnsKey.addToResourcePolicy(new iam.PolicyStatement({
+      sid: 'AllowCloudWatchLogs',
+      principals: [new iam.ServicePrincipal(`logs.${this.region}.amazonaws.com`)],
+      actions: ['kms:Encrypt', 'kms:Decrypt', 'kms:ReEncrypt*', 'kms:GenerateDataKey*', 'kms:Describe*'],
+      resources: ['*'],
+      conditions: {
+        ArnLike: { 'kms:EncryptionContext:aws:logs:arn': `arn:${this.partition}:logs:${this.region}:${this.account}:log-group:*` },
+      },
+    }));
+    dnsKey.addToResourcePolicy(new iam.PolicyStatement({
+      sid: 'AllowEventBridgeToSendToEncryptedDlq',
+      principals: [new iam.ServicePrincipal('events.amazonaws.com')],
+      actions: ['kms:Decrypt', 'kms:GenerateDataKey'],
+      resources: ['*'],
+      conditions: { StringEquals: { 'aws:SourceAccount': this.account } },
+    }));
+
     const dlq = new sqs.Queue(this, 'DlqQueue', {
       queueName: `${resourcePrefix}-ingress-dns-dlq`,
-      encryption: sqs.QueueEncryption.SQS_MANAGED,
+      encryption: sqs.QueueEncryption.KMS,
+      encryptionMasterKey: dnsKey,
+      dataKeyReuse: cdk.Duration.minutes(5),
       retentionPeriod: cdk.Duration.days(14),
       enforceSSL: true,
     });
@@ -70,7 +95,8 @@ export class VpcLatticeIngressDnsStack extends cdk.Stack {
       tableName: `${resourcePrefix}-ingress-dns-records`,
       partitionKey: { name: 'ResourceArn', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      encryption: dynamodb.TableEncryption.AWS_MANAGED,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dnsKey,
       pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
@@ -78,6 +104,7 @@ export class VpcLatticeIngressDnsStack extends cdk.Stack {
     const logGroup = new logs.LogGroup(this, 'StateMachineLogGroup', {
       logGroupName: `/${resourcePrefix}/ingress-dns-automation/state-machine`,
       retention: logs.RetentionDays.ONE_MONTH,
+      encryptionKey: dnsKey,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
@@ -85,27 +112,50 @@ export class VpcLatticeIngressDnsStack extends cdk.Stack {
       roleName: `${resourcePrefix}-ingress-dns-sfn-role-${this.region}`,
       assumedBy: new iam.ServicePrincipal('states.amazonaws.com'),
     });
-    sfnRole.addToPolicy(new iam.PolicyStatement({
-      actions: ['ec2:DescribeVpcEndpointAssociations'],
-      resources: ['*'],
-    }));
-    sfnRole.addToPolicy(new iam.PolicyStatement({
-      actions: ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:DeleteItem'],
-      resources: [table.tableArn],
-    }));
-    sfnRole.addToPolicy(new iam.PolicyStatement({
-      actions: ['route53:ListResourceRecordSets', 'route53:ChangeResourceRecordSets'],
-      resources: [`arn:${this.partition}:route53:::hostedzone/${privateHostedZoneId}`],
-    }));
-    sfnRole.addToPolicy(new iam.PolicyStatement({
-      actions: [
-        'logs:CreateLogDelivery', 'logs:GetLogDelivery', 'logs:UpdateLogDelivery',
-        'logs:DeleteLogDelivery', 'logs:ListLogDeliveries', 'logs:PutResourcePolicy',
-        'logs:DescribeResourcePolicies', 'logs:DescribeLogGroups', 'logs:CreateLogStream',
-        'logs:PutLogEvents',
+    // Managed (not inline) policy attached to the state machine role.
+    const sfnPolicy = new iam.ManagedPolicy(this, 'StepFunctionsPolicy', {
+      description: 'Ingress DNS automation state machine permissions (EC2 read, DynamoDB tracker, Route 53 zone, KMS, log delivery)',
+      roles: [sfnRole],
+      statements: [
+        new iam.PolicyStatement({
+          sid: 'DescribeSneAssociations',
+          actions: ['ec2:DescribeVpcEndpointAssociations'],
+          resources: ['*'],
+        }),
+        new iam.PolicyStatement({
+          sid: 'TrackerTable',
+          actions: ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:DeleteItem'],
+          resources: [table.tableArn],
+        }),
+        new iam.PolicyStatement({
+          sid: 'TrackerTableKms',
+          actions: ['kms:Decrypt', 'kms:GenerateDataKey', 'kms:DescribeKey'],
+          resources: [dnsKey.keyArn],
+          conditions: { StringEquals: { 'kms:ViaService': `dynamodb.${this.region}.amazonaws.com` } },
+        }),
+        new iam.PolicyStatement({
+          sid: 'IngressZoneRecords',
+          actions: ['route53:ListResourceRecordSets', 'route53:ChangeResourceRecordSets'],
+          resources: [`arn:${this.partition}:route53:::hostedzone/${privateHostedZoneId}`],
+        }),
+        // Step Functions log delivery: these CloudWatch Logs delivery actions do not
+        // support resource-level permissions, so '*' is required by the service.
+        new iam.PolicyStatement({
+          sid: 'StateMachineLogDelivery',
+          actions: [
+            'logs:CreateLogDelivery', 'logs:GetLogDelivery', 'logs:UpdateLogDelivery',
+            'logs:DeleteLogDelivery', 'logs:ListLogDeliveries', 'logs:PutResourcePolicy',
+            'logs:DescribeResourcePolicies', 'logs:DescribeLogGroups',
+          ],
+          resources: ['*'],
+        }),
+        new iam.PolicyStatement({
+          sid: 'StateMachineLogStreams',
+          actions: ['logs:CreateLogStream', 'logs:PutLogEvents'],
+          resources: [logGroup.logGroupArn],
+        }),
       ],
-      resources: ['*'],
-    }));
+    });
 
     // SN-E IDs to query. Defaults to the dev SN-E (the documented example);
     // when multiple environments are enabled, the state machine queries every
@@ -196,12 +246,19 @@ export class VpcLatticeIngressDnsStack extends cdk.Stack {
       roleName: `${resourcePrefix}-ingress-dns-events-role-${this.region}`,
       assumedBy: new iam.ServicePrincipal('events.amazonaws.com'),
     });
-    eventsRole.addToPolicy(new iam.PolicyStatement({
-      actions: ['states:StartExecution'],
-      resources: [stateMachine.ref],
-    }));
+    new iam.ManagedPolicy(this, 'EventBridgeTargetPolicy', {
+      description: 'Allows EventBridge rules to start the ingress DNS state machine',
+      roles: [eventsRole],
+      statements: [new iam.PolicyStatement({
+        actions: ['states:StartExecution'],
+        resources: [stateMachine.ref],
+      })],
+    });
 
-    new events.CfnRule(this, 'DnsAutomationRule', {
+    // Rules that deliver failed events to the DLQ (granted below via the queue policy).
+    const dlqSourceRuleArns: string[] = [];
+
+    const dnsRule = new events.CfnRule(this, 'DnsAutomationRule', {
       name: `${resourcePrefix}-ingress-dns-trigger`,
       state: 'ENABLED',
       eventPattern: {
@@ -221,6 +278,7 @@ export class VpcLatticeIngressDnsStack extends cdk.Stack {
         deadLetterConfig: { arn: dlq.queueArn },
       }],
     });
+    dlqSourceRuleArns.push(dnsRule.attrArn);
 
     // ----------------------------------------------------------------
     // Cross-account ingress: workload accounts expose applications as Resource
@@ -253,7 +311,7 @@ export class VpcLatticeIngressDnsStack extends cdk.Stack {
         },
       });
 
-      new events.CfnRule(this, 'DnsAutomationRuleCrossAccount', {
+      const crossAccountRule = new events.CfnRule(this, 'DnsAutomationRuleCrossAccount', {
         name: `${resourcePrefix}-ingress-dns-trigger-xacct`,
         eventBusName: crossAccountBus.ref,
         state: 'ENABLED',
@@ -274,6 +332,7 @@ export class VpcLatticeIngressDnsStack extends cdk.Stack {
           deadLetterConfig: { arn: dlq.queueArn },
         }],
       });
+      dlqSourceRuleArns.push(crossAccountRule.attrArn);
 
       // Publish the bus name so workload-account forwarders (in other accounts)
       // can be pointed at it via context; also surfaced as a stack output.
@@ -286,19 +345,28 @@ export class VpcLatticeIngressDnsStack extends cdk.Stack {
       new cdk.CfnOutput(this, 'IngressDnsBusArn', { value: crossAccountBus.attrArn });
     }
 
+    // EventBridge needs an explicit allow to deliver failed events to a rule DLQ.
+    dlq.addToResourcePolicy(new iam.PolicyStatement({
+      sid: 'AllowEventBridgeRulesToSend',
+      principals: [new iam.ServicePrincipal('events.amazonaws.com')],
+      actions: ['sqs:SendMessage'],
+      resources: [dlq.queueArn],
+      conditions: { ArnEquals: { 'aws:SourceArn': dlqSourceRuleArns } },
+    }));
+
     new cdk.CfnOutput(this, 'StateMachineArn', { value: stateMachine.ref });
     new cdk.CfnOutput(this, 'DnsRecordTableName', { value: table.tableName });
 
     // ----------------------------------------------------------------
     // cdk-nag suppressions
     // ----------------------------------------------------------------
-    NagSuppressions.addResourceSuppressions(sfnRole, [
+    NagSuppressions.addResourceSuppressions(sfnPolicy, [
       {
         id: 'AwsSolutions-IAM5',
         reason: 'ec2:DescribeVpcEndpointAssociations does not support resource-level permissions; CloudWatch Logs delivery actions for Step Functions logging require wildcard per AWS documentation. DynamoDB and Route 53 access are scoped to the specific table and hosted zone.',
         appliesTo: ['Resource::*'],
       },
-    ], true);
+    ]);
 
     NagSuppressions.addResourceSuppressions(stateMachine, [
       {
