@@ -247,14 +247,6 @@ Resources:
               - logs:CreateLogStream
               - logs:PutLogEvents
             Resource: !GetAtt StateMachineLogGroup.Arn
-    Metadata:
-      checkov:
-        skip:
-          - id: CKV_AWS_111
-            comment: The Step Functions log-delivery actions (logs:CreateLogDelivery and related) do not support resource-level permissions and must use Resource '*'. Log stream writes are scoped to the state machine log group.
-      guard:
-        SuppressedRules:
-          - IAM_POLICYDOCUMENT_NO_WILDCARD_RESOURCE_RULE
 
   StepFunctionsRole:
     Type: AWS::IAM::Role

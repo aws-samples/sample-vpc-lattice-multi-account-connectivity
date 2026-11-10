@@ -102,6 +102,8 @@ Resources:
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
+          # ecr:GetAuthorizationToken does not support resource-level permissions,
+          # so '*' is required. Every write action below is scoped to specific ARNs.
           - Sid: ECRAuth
             Effect: Allow
             Action: ecr:GetAuthorizationToken
@@ -134,14 +136,6 @@ Resources:
               - kms:GenerateDataKey*
               - kms:DescribeKey
             Resource: !GetAtt BuildKmsKey.Arn
-    Metadata:
-      checkov:
-        skip:
-          - id: CKV_AWS_111
-            comment: ecr:GetAuthorizationToken does not support resource-level permissions and must use Resource '*'. All other actions are scoped to specific ARNs.
-      guard:
-        SuppressedRules:
-          - IAM_POLICYDOCUMENT_NO_WILDCARD_RESOURCE_RULE
 
   CodeBuildRole:
     Type: AWS::IAM::Role
