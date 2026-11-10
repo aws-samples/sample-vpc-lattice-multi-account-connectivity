@@ -2,6 +2,7 @@ import * as cdk from 'aws-cdk-lib';
 import * as ecr from 'aws-cdk-lib/aws-ecr';
 import * as codebuild from 'aws-cdk-lib/aws-codebuild';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as kms from 'aws-cdk-lib/aws-kms';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3assets from 'aws-cdk-lib/aws-s3-assets';
@@ -41,11 +42,27 @@ export class SquidImageBuildStack extends cdk.Stack {
     const repositoryName = props.repositoryName ?? `${resourcePrefix}-squid-proxy`;
     const imageUriSsmPath = props.imageUriSsmPath ?? `/${resourcePrefix}/egress/squid-image-uri`;
 
+    // Customer managed key for the ECR repository, CodeBuild artifacts/cache and build logs.
+    const buildKey = new kms.Key(this, 'BuildKmsKey', {
+      description: 'CMK for the Squid image build (ECR repository, CodeBuild, build logs)',
+      enableKeyRotation: true,
+    });
+    buildKey.addToResourcePolicy(new iam.PolicyStatement({
+      sid: 'AllowCloudWatchLogs',
+      principals: [new iam.ServicePrincipal(`logs.${this.region}.amazonaws.com`)],
+      actions: ['kms:Encrypt', 'kms:Decrypt', 'kms:ReEncrypt*', 'kms:GenerateDataKey*', 'kms:Describe*'],
+      resources: ['*'],
+      conditions: {
+        ArnLike: { 'kms:EncryptionContext:aws:logs:arn': `arn:${this.partition}:logs:${this.region}:${this.account}:log-group:*` },
+      },
+    }));
+
     const repo = new ecr.Repository(this, 'SquidRepo', {
       repositoryName,
       imageScanOnPush: true,
       imageTagMutability: ecr.TagMutability.IMMUTABLE,
-      encryption: ecr.RepositoryEncryption.AES_256,
+      encryption: ecr.RepositoryEncryption.KMS,
+      encryptionKey: buildKey,
       lifecycleRules: [{ maxImageCount: 5, description: 'Keep only the last 5 images' }],
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       emptyOnDelete: true,
@@ -55,6 +72,7 @@ export class SquidImageBuildStack extends cdk.Stack {
     const buildLogGroup = new logs.LogGroup(this, 'BuildLogs', {
       logGroupName: `/aws/codebuild/${repositoryName}-build`,
       retention: logs.RetentionDays.ONE_MONTH,
+      encryptionKey: buildKey,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
@@ -67,6 +85,7 @@ export class SquidImageBuildStack extends cdk.Stack {
       projectName: `${repositoryName}-build`,
       description: 'Builds the Squid proxy image and pushes it to ECR',
       timeout: cdk.Duration.minutes(15),
+      encryptionKey: buildKey,
       environment: {
         buildImage: codebuild.LinuxBuildImage.AMAZON_LINUX_2_5,
         computeType: codebuild.ComputeType.SMALL,
@@ -133,10 +152,6 @@ export class SquidImageBuildStack extends cdk.Stack {
     });
 
     NagSuppressions.addStackSuppressions(this, [
-      {
-        id: 'AwsSolutions-CB4',
-        reason: 'CodeBuild builds a public Squid container image; KMS encryption of build artifacts is not required.',
-      },
       {
         id: 'AwsSolutions-IAM5',
         reason: 'ECR GetAuthorizationToken and CodeBuild log/report permissions require wildcard resources per AWS documentation.',

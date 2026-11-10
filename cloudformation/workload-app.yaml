@@ -134,6 +134,7 @@ Resources:
       SubnetId: !Ref WorkloadSubnetAId
       SecurityGroupIds:
         - !Ref AppSg
+      EbsOptimized: true
       Monitoring: false
       MetadataOptions:
         HttpTokens: required
@@ -190,6 +191,14 @@ Resources:
       DefaultActions:
         - Type: forward
           TargetGroupArn: !Ref AppTargetGroup
+    Metadata:
+      guard:
+        SuppressedRules:
+          - ELBV2_LISTENER_SSL_POLICY_RULE
+      comment: >
+        Intentional TCP listener on an internal NLB for a non-production demo
+        app (plain HTTP). Production workloads should use a TLS listener with an
+        ACM certificate and an ELBSecurityPolicy-TLS13 or TLS12 policy.
 
   AppRgwSg:
     Type: AWS::EC2::SecurityGroup

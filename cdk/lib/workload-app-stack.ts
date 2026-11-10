@@ -84,6 +84,7 @@ export class WorkloadAppStack extends cdk.Stack {
       role,
       securityGroup: appSg,
       requireImdsv2: true,
+      ebsOptimized: true,
       blockDevices: [{ deviceName: '/dev/xvda', volume: ec2.BlockDeviceVolume.ebs(8, { encrypted: true, volumeType: ec2.EbsDeviceVolumeType.GP3 }) }],
       userData: ec2.UserData.custom([
         '#!/bin/bash',
